@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Pépito</string>
+    <key>CFBundleDisplayName</key>
+    <string>Pépito</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.pepito.app</string>
+    <key>CFBundleExecutable</key>
+    <string>Pepito</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Pépito enregistre le micro pour transcrire vos réunions.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Pépito capte la sortie audio système pour transcrire les autres participants de la réunion.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Pépito transcrit l'audio de vos réunions en texte, sur votre appareil.</string>
+</dict>
+</plist>
