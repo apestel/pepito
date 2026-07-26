@@ -77,6 +77,7 @@ Pepito.app
 ├─ AIKit             Client OpenAI-compatible, boucle agentic, registre d'outils, prompts
 ├─ VaultKit          Arborescence documentaire locale (Markdown + front-matter), indexation
 ├─ ActionKit         Modèle de plans d'action, hiérarchie, statuts, échéances, suivi
+├─ MailKit           Triage boîte mail : extraction Mail.app, digest compact, rendu de la revue
 ├─ AppCore           Modèles de domaine, persistance (SwiftData), coordination, état
 ├─ AdminUI           Écran d'administration (réglages IA, dossier, prompt agentic)
 ├─ AppUI             Menu bar, fenêtre principale, timeline réunions, éditeur de transcript
@@ -84,7 +85,7 @@ Pepito.app
 ```
 
 Règle de dépendances : `AppUI`/`AdminUI` → `AppCore` → (`CaptureKit`, `TranscriptionKit`,
-`AIKit`, `VaultKit`, `ActionKit`). Les Kits ne dépendent pas de l'UI. Chaque Kit est un module
+`AIKit`, `VaultKit`, `ActionKit`, `MailKit`). Les Kits ne dépendent pas de l'UI. Chaque Kit est un module
 Swift Package local testable isolément.
 
 ---
@@ -200,7 +201,7 @@ sous `Sources/`, tests sous `Tests/`, app exécutable `Sources/Pepito`.
 
 ## 11. État & feuille de route (résumé)
 
-- **Statut actuel** : Phases 0 → 7 implémentées (55 tests verts, `swift build`/`swift test` OK,
+- **Statut actuel** : Phases 0 → 7 implémentées + triage mail natif (77 tests verts, `swift build`/`swift test` OK,
   l'app se lance). Logique testée : Vault, client IA OpenAI-compatible (requête/réponse/SSE/chunking),
   boucle agentic + outils + `MeetingPipeline`, hiérarchie & suivi des actions, réglages/Keychain,
   `MeetingStore`, et l'orchestration end-to-end `MeetingCoordinator` (capture→transcription→analyse).

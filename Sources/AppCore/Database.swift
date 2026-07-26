@@ -1,5 +1,7 @@
 import Foundation
 import SQLite3
+import ActionKit
+import MailKit
 
 /// Base SQLite locale : historique des réunions, liste de tags réutilisables, et **étape de
 /// workflow** de chaque réunion (pour reprendre après un échec). Remplace l'ancien index JSON.
@@ -23,6 +25,23 @@ public final class Database {
         }
         exec("PRAGMA foreign_keys = ON;")
         exec(Self.schema)
+        migrate()
+    }
+
+    /// Migrations additives pour les bases déjà créées (CREATE TABLE IF NOT EXISTS n'ajoute pas de
+    /// colonne à une table existante).
+    private func migrate() {
+        let existing = Set(query("PRAGMA table_info(meeting)") { self.colText($0, 1) ?? "" })
+        if !existing.contains("participants") {
+            exec("ALTER TABLE meeting ADD COLUMN participants TEXT NOT NULL DEFAULT '';")
+        }
+        if !existing.contains("user_notes") {
+            exec("ALTER TABLE meeting ADD COLUMN user_notes TEXT NOT NULL DEFAULT '';")
+        }
+        let actionColumns = Set(query("PRAGMA table_info(action)") { self.colText($0, 1) ?? "" })
+        if !actionColumns.contains("source_url") {
+            exec("ALTER TABLE action ADD COLUMN source_url TEXT;")
+        }
     }
 
     deinit { sqlite3_close(db) }
@@ -39,12 +58,27 @@ public final class Database {
       id TEXT PRIMARY KEY, title TEXT NOT NULL,
       started_at REAL NOT NULL, ended_at REAL,
       status TEXT NOT NULL, folder_path TEXT NOT NULL,
-      session_dir TEXT, transcript TEXT, last_error TEXT, updated_at REAL NOT NULL);
+      session_dir TEXT, transcript TEXT, last_error TEXT, updated_at REAL NOT NULL,
+      participants TEXT NOT NULL DEFAULT '');
     CREATE TABLE IF NOT EXISTS tag(name TEXT PRIMARY KEY, created_at REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS meeting_tag(
       meeting_id TEXT NOT NULL REFERENCES meeting(id) ON DELETE CASCADE,
       tag_name TEXT NOT NULL REFERENCES tag(name) ON DELETE CASCADE,
       PRIMARY KEY(meeting_id, tag_name));
+    CREATE TABLE IF NOT EXISTS action(
+      id TEXT PRIMARY KEY,
+      meeting_id TEXT REFERENCES meeting(id) ON DELETE CASCADE,
+      parent_id TEXT, title TEXT NOT NULL, details TEXT NOT NULL DEFAULT '',
+      owner TEXT, due REAL, status TEXT NOT NULL, priority INTEGER NOT NULL,
+      created_at REAL NOT NULL, source_url TEXT);
+    CREATE TABLE IF NOT EXISTS mail_item(
+      review_date TEXT NOT NULL, idx INTEGER NOT NULL,
+      subject TEXT NOT NULL, sender TEXT NOT NULL, url TEXT NOT NULL,
+      message_count INTEGER NOT NULL, unread INTEGER NOT NULL, flagged INTEGER NOT NULL,
+      bucket TEXT, importance TEXT NOT NULL DEFAULT '', action TEXT NOT NULL DEFAULT '',
+      deadline TEXT NOT NULL DEFAULT '', why TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '',
+      action_id TEXT,
+      PRIMARY KEY(review_date, idx));
     """
 
     // MARK: - API
@@ -52,7 +86,7 @@ public final class Database {
     /// Toutes les réunions, plus récente en tête, tags inclus.
     public func loadAll() -> [Meeting] {
         var meetings = query(
-            "SELECT id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error"
+            "SELECT id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error,participants,user_notes"
             + " FROM meeting ORDER BY started_at DESC") { Self.buildMeeting($0) }
             .compactMap { $0 }
         for i in meetings.indices { meetings[i].tags = tags(for: meetings[i].id) }
@@ -62,12 +96,13 @@ public final class Database {
     /// Insère ou met à jour une réunion (par `id`) et réécrit ses liaisons de tags.
     public func save(_ m: Meeting) {
         run("""
-            INSERT INTO meeting(id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO meeting(id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error,updated_at,participants,user_notes)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET title=excluded.title, started_at=excluded.started_at,
               ended_at=excluded.ended_at, status=excluded.status, folder_path=excluded.folder_path,
               session_dir=excluded.session_dir, transcript=excluded.transcript,
-              last_error=excluded.last_error, updated_at=excluded.updated_at
+              last_error=excluded.last_error, updated_at=excluded.updated_at,
+              participants=excluded.participants, user_notes=excluded.user_notes
             """) { s in
             self.text(s, 1, m.id.uuidString); self.text(s, 2, m.title)
             self.real(s, 3, m.startedAt.timeIntervalSince1970)
@@ -75,6 +110,7 @@ public final class Database {
             self.text(s, 5, m.status.rawValue); self.text(s, 6, m.folderPath)
             self.text(s, 7, m.sessionDirPath); self.text(s, 8, m.transcript)
             self.text(s, 9, m.lastError); self.real(s, 10, Date().timeIntervalSince1970)
+            self.text(s, 11, Self.encodeStrings(m.participants)); self.text(s, 12, m.userNotes)
         }
         addTags(m.tags)
         run("DELETE FROM meeting_tag WHERE meeting_id=?") { self.text($0, 1, m.id.uuidString) }
@@ -83,6 +119,11 @@ public final class Database {
                 self.text(s, 1, m.id.uuidString); self.text(s, 2, tag)
             }
         }
+    }
+
+    /// Supprime une réunion ; ses tags liés et ses actions tombent par cascade FK (foreign_keys=ON).
+    public func delete(_ id: UUID) {
+        run("DELETE FROM meeting WHERE id=?") { self.text($0, 1, id.uuidString) }
     }
 
     /// Liste des tags connus, triée (alimente le sélecteur de la fenêtre de nommage).
@@ -100,6 +141,139 @@ public final class Database {
         }
     }
 
+    // MARK: - Plans d'action (persistés pour survivre au relancement et au suivi cross-réunion)
+
+    /// Insère/met à jour un lot d'actions (par `id`). Le statut existant est **préservé** en cas de
+    /// re-traitement (on n'écrase pas un suivi manuel), le reste est rafraîchi.
+    public func saveActions(_ items: [ActionItem]) {
+        for a in items {
+            run("""
+                INSERT INTO action(id,meeting_id,parent_id,title,details,owner,due,status,priority,created_at,source_url)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET meeting_id=excluded.meeting_id, parent_id=excluded.parent_id,
+                  title=excluded.title, details=excluded.details, owner=excluded.owner,
+                  due=excluded.due, priority=excluded.priority, source_url=excluded.source_url
+                """) { s in
+                self.text(s, 1, a.id.uuidString); self.text(s, 2, a.meetingID?.uuidString)
+                self.text(s, 3, a.parentID?.uuidString); self.text(s, 4, a.title)
+                self.text(s, 5, a.details); self.text(s, 6, a.owner)
+                self.real(s, 7, a.dueDate?.timeIntervalSince1970)
+                self.text(s, 8, a.status.rawValue); self.int(s, 9, Int32(a.priority.rawValue))
+                self.real(s, 10, Date().timeIntervalSince1970); self.text(s, 11, a.sourceURL)
+            }
+        }
+    }
+
+    /// Toutes les actions persistées (rechargées au démarrage, sinon le suivi serait perdu).
+    public func loadAllActions() -> [ActionItem] {
+        query(Self.actionSelect + " ORDER BY created_at") { Self.buildAction($0) }.compactMap { $0 }
+    }
+
+    /// Actions ouvertes toutes réunions confondues (socle du suivi/pré-brief cross-réunion).
+    public func allOpenActions() -> [ActionItem] {
+        query(Self.actionSelect + " WHERE status IN ('todo','in-progress','blocked') ORDER BY created_at") {
+            Self.buildAction($0)
+        }.compactMap { $0 }
+    }
+
+    /// Met à jour le seul statut d'une action (édition UI, auto-résolution cross-réunion).
+    public func updateStatus(_ id: UUID, _ status: ActionStatus) {
+        run("UPDATE action SET status=? WHERE id=?") { s in
+            self.text(s, 1, status.rawValue); self.text(s, 2, id.uuidString)
+        }
+    }
+
+    // MARK: - Revues de mails (historique consultable dans l'app)
+
+    /// Enregistre une revue. Retrier le même jour **remplace** la revue précédente, comme le
+    /// document Markdown du Vault est réécrit.
+    public func saveMailReview(_ entries: [MailReviewEntry]) {
+        guard let date = entries.first?.reviewDate else { return }
+        run("DELETE FROM mail_item WHERE review_date=?") { self.text($0, 1, date) }
+        for e in entries {
+            run("""
+                INSERT INTO mail_item(review_date,idx,subject,sender,url,message_count,unread,flagged,
+                  bucket,importance,action,deadline,why,summary,action_id)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """) { s in
+                self.text(s, 1, e.reviewDate); self.int(s, 2, Int32(e.index))
+                self.text(s, 3, e.subject); self.text(s, 4, e.sender); self.text(s, 5, e.url)
+                self.int(s, 6, Int32(e.messageCount)); self.int(s, 7, Int32(e.unread))
+                self.int(s, 8, e.flagged ? 1 : 0)
+                self.text(s, 9, e.bucket?.rawValue); self.text(s, 10, e.importance)
+                self.text(s, 11, e.action); self.text(s, 12, e.deadline)
+                self.text(s, 13, e.why); self.text(s, 14, e.summary)
+                self.text(s, 15, e.actionID?.uuidString)
+            }
+        }
+    }
+
+    /// Historique des revues, plus récente en tête, avec ses compteurs (agrégés en SQL — pas de
+    /// table de revue séparée à tenir à jour). `immediateCount` est ce qui **reste** à traiter :
+    /// une conversation dont l'action est terminée ou abandonnée en sort, comme dans la revue.
+    public func mailReviews() -> [MailReviewSummary] {
+        query("""
+            SELECT m.review_date, SUM(m.message_count), COUNT(*),
+              SUM(m.bucket='immediate' AND (a.status IS NULL OR a.status NOT IN ('done','dropped'))),
+              SUM(m.flagged), SUM(m.action_id IS NOT NULL)
+            FROM mail_item m LEFT JOIN action a ON a.id = m.action_id
+            GROUP BY m.review_date ORDER BY m.review_date DESC
+            """) { s in
+            MailReviewSummary(
+                date: Self.column(s, 0) ?? "",
+                messageCount: Int(Self.columnInt(s, 1)),
+                threadCount: Int(Self.columnInt(s, 2)),
+                immediateCount: Int(Self.columnInt(s, 3)),
+                flaggedCount: Int(Self.columnInt(s, 4)),
+                actionCount: Int(Self.columnInt(s, 5)))
+        }.filter { !$0.date.isEmpty }
+    }
+
+    /// Conversations d'une revue, dans l'ordre du digest.
+    public func mailReview(date: String) -> [MailReviewEntry] {
+        query("""
+            SELECT review_date,idx,subject,sender,url,message_count,unread,flagged,
+              bucket,importance,action,deadline,why,summary,action_id
+            FROM mail_item WHERE review_date=? ORDER BY idx
+            """, bind: { self.text($0, 1, date) }) { s in
+            MailReviewEntry(
+                reviewDate: Self.column(s, 0) ?? date,
+                index: Int(Self.columnInt(s, 1)),
+                subject: Self.column(s, 2) ?? "", sender: Self.column(s, 3) ?? "",
+                url: Self.column(s, 4) ?? "",
+                messageCount: Int(Self.columnInt(s, 5)), unread: Int(Self.columnInt(s, 6)),
+                flagged: Self.columnInt(s, 7) != 0,
+                bucket: Self.column(s, 8).flatMap { MailBucket(rawValue: $0) },
+                importance: Self.column(s, 9) ?? "", action: Self.column(s, 10) ?? "",
+                deadline: Self.column(s, 11) ?? "", why: Self.column(s, 12) ?? "",
+                summary: Self.column(s, 13) ?? "",
+                actionID: Self.column(s, 14).flatMap { UUID(uuidString: $0) })
+        }
+    }
+
+    /// Supprime une revue de l'historique (les actions créées, elles, restent dans le suivi).
+    public func deleteMailReview(date: String) {
+        run("DELETE FROM mail_item WHERE review_date=?") { self.text($0, 1, date) }
+    }
+
+    private static let actionSelect =
+        "SELECT id,meeting_id,parent_id,title,details,owner,due,status,priority,source_url FROM action"
+
+    private static func buildAction(_ s: OpaquePointer?) -> ActionItem? {
+        guard let idStr = column(s, 0), let id = UUID(uuidString: idStr),
+              let title = column(s, 3), let statusRaw = column(s, 7),
+              let status = ActionStatus(rawValue: statusRaw) else { return nil }
+        return ActionItem(
+            id: id,
+            parentID: column(s, 2).flatMap { UUID(uuidString: $0) },
+            meetingID: column(s, 1).flatMap { UUID(uuidString: $0) },
+            title: title, details: column(s, 4) ?? "", owner: column(s, 5),
+            dueDate: columnDouble(s, 6).map { Date(timeIntervalSince1970: $0) },
+            status: status,
+            priority: ActionPriority(rawValue: Int(columnInt(s, 8))) ?? .medium,
+            sourceURL: column(s, 9))
+    }
+
     private func tags(for id: UUID) -> [String] {
         query("SELECT tag_name FROM meeting_tag WHERE meeting_id=? ORDER BY tag_name",
               bind: { self.text($0, 1, id.uuidString) }) { self.colText($0, 0) ?? "" }
@@ -115,8 +289,21 @@ public final class Database {
             id: id, title: title,
             startedAt: Date(timeIntervalSince1970: started),
             endedAt: columnDouble(s, 3).map { Date(timeIntervalSince1970: $0) },
+            participants: decodeStrings(column(s, 9)),
             status: status, folderPath: folder,
-            sessionDirPath: column(s, 6), transcript: column(s, 7), lastError: column(s, 8))
+            sessionDirPath: column(s, 6), transcript: column(s, 7),
+            userNotes: column(s, 10) ?? "", lastError: column(s, 8))
+    }
+
+    /// Encodage JSON d'une liste de chaînes (participants) — robuste aux virgules dans les noms.
+    private static func encodeStrings(_ v: [String]) -> String {
+        guard let data = try? JSONEncoder().encode(v) else { return "[]" }
+        return String(data: data, encoding: .utf8) ?? "[]"
+    }
+    private static func decodeStrings(_ s: String?) -> [String] {
+        guard let s, let data = s.data(using: .utf8),
+              let v = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return v
     }
 
     // MARK: - Bas niveau
@@ -167,6 +354,9 @@ public final class Database {
     private func real(_ s: OpaquePointer?, _ i: Int32, _ v: Double?) {
         if let v { sqlite3_bind_double(s, i, v) } else { sqlite3_bind_null(s, i) }
     }
+    private func int(_ s: OpaquePointer?, _ i: Int32, _ v: Int32) {
+        sqlite3_bind_int(s, i, v)
+    }
 
     private func colText(_ s: OpaquePointer?, _ i: Int32) -> String? { Self.column(s, i) }
 
@@ -176,5 +366,8 @@ public final class Database {
     }
     private static func columnDouble(_ s: OpaquePointer?, _ i: Int32) -> Double? {
         sqlite3_column_type(s, i) == SQLITE_NULL ? nil : sqlite3_column_double(s, i)
+    }
+    private static func columnInt(_ s: OpaquePointer?, _ i: Int32) -> Int32 {
+        sqlite3_column_int(s, i)
     }
 }

@@ -33,6 +33,12 @@ public struct Settings: Sendable, Codable, Equatable {
     /// Bundle id de l'application dont capturer la sortie audio (piste « Interlocuteurs »).
     /// Vide = toute la sortie système (comportement par défaut). App absente à l'enregistrement = repli global.
     public var systemCaptureBundleID: String
+    /// Prompt de triage de la boîte mail (voir `PromptTemplate.defaultMailPrompt`).
+    public var mailPrompt: String
+    /// Période par défaut du triage, en jours.
+    public var mailDays: Int
+    /// Garde-fou : nombre maximum de messages extraits par triage.
+    public var mailLimit: Int
 
     public init(
         aiBaseURL: String = "https://api.openai.com/v1",
@@ -42,7 +48,10 @@ public struct Settings: Sendable, Codable, Equatable {
         transcriptionLocaleIdentifier: String = "fr-FR",
         flags: FeatureFlags = .default,
         echoCancellation: EchoCancellationMode = .offlineReference,
-        systemCaptureBundleID: String = ""
+        systemCaptureBundleID: String = "",
+        mailPrompt: String = PromptTemplate.defaultMailPrompt,
+        mailDays: Int = 7,
+        mailLimit: Int = 300
     ) {
         self.aiBaseURL = aiBaseURL
         self.aiModel = aiModel
@@ -52,6 +61,9 @@ public struct Settings: Sendable, Codable, Equatable {
         self.flags = flags
         self.echoCancellation = echoCancellation
         self.systemCaptureBundleID = systemCaptureBundleID
+        self.mailPrompt = mailPrompt
+        self.mailDays = mailDays
+        self.mailLimit = mailLimit
     }
 
     /// Décodage tolérant : un champ absent (ancien fichier) prend sa valeur par défaut, plutôt que
@@ -67,6 +79,9 @@ public struct Settings: Sendable, Codable, Equatable {
         flags = try c.decodeIfPresent(FeatureFlags.self, forKey: .flags) ?? d.flags
         echoCancellation = try c.decodeIfPresent(EchoCancellationMode.self, forKey: .echoCancellation) ?? d.echoCancellation
         systemCaptureBundleID = try c.decodeIfPresent(String.self, forKey: .systemCaptureBundleID) ?? d.systemCaptureBundleID
+        mailPrompt = try c.decodeIfPresent(String.self, forKey: .mailPrompt) ?? d.mailPrompt
+        mailDays = try c.decodeIfPresent(Int.self, forKey: .mailDays) ?? d.mailDays
+        mailLimit = try c.decodeIfPresent(Int.self, forKey: .mailLimit) ?? d.mailLimit
     }
 
     public static let `default` = Settings()

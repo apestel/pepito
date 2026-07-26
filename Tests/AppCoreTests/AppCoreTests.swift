@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import AVFoundation
 import CaptureKit
+import ActionKit
 @testable import AppCore
 
 @Test func linkedKitsAreAllPresent() {
@@ -28,6 +29,16 @@ import CaptureKit
     #expect(rendered == "Date: 2026-07-15 / Participants: Alice, Bob / Arbre: a.md")
 }
 
+@Test func promptRenderingInterpolatesContextVars() {
+    let rendered = PromptTemplate.render(
+        "Ctx: {{context}} | Notes: {{user_notes}} | Ouvertes: {{open_actions}}",
+        context: PromptContext(
+            transcript: "T", date: "d", participants: "p", vaultTree: "",
+            context: "Agenda: budget", userNotes: "- point clé", openActions: "abc: Envoyer")
+    )
+    #expect(rendered == "Ctx: Agenda: budget | Notes: - point clé | Ouvertes: abc: Envoyer")
+}
+
 // MARK: - Settings persistence
 
 @Test func settingsRoundTripOnDisk() throws {
@@ -45,6 +56,121 @@ import CaptureKit
 
     #expect(store.load() == settings)
     #expect(settings.isConfigured)
+}
+
+// MARK: - Persistance des plans d'action (Phase A)
+
+@Test func actionsPersistAcrossReopen() {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "pepito-actions-\(UUID().uuidString)")
+    let dbPath = dir.appending(path: "pepito.db")
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let meetingID = UUID()
+    let parent = ActionItem(meetingID: meetingID, title: "Préparer le budget", owner: "Alice",
+                            dueDate: Date(timeIntervalSince1970: 1_800_000_000), priority: .high)
+    let child = ActionItem(parentID: parent.id, meetingID: meetingID, title: "Chiffrer les postes")
+
+    do {
+        let db = Database(path: dbPath)
+        db.save(Meeting(id: meetingID, title: "Sync", folderPath: "f")) // FK: la réunion existe avant ses actions
+        db.saveActions([parent, child])
+        db.updateStatus(child.id, .done)
+    }
+
+    // Réouverture : la base doit rendre les actions et le statut modifié.
+    let db = Database(path: dbPath)
+    let all = db.loadAllActions()
+    #expect(all.count == 2)
+    let reloadedParent = all.first { $0.id == parent.id }
+    #expect(reloadedParent?.owner == "Alice")
+    #expect(reloadedParent?.priority == .high)
+    #expect(reloadedParent?.dueDate == Date(timeIntervalSince1970: 1_800_000_000))
+    #expect(all.first { $0.id == child.id }?.parentID == parent.id)
+
+    // updateStatus persiste ; allOpenActions exclut la terminée.
+    #expect(db.loadAllActions().first { $0.id == child.id }?.status == .done)
+    #expect(db.allOpenActions().map(\.id) == [parent.id])
+
+    // Action issue d'un mail : pas de réunion d'origine, mais un lien ouvrable persisté. Réenregistrer
+    // la même action (retriage) ne duplique pas la ligne et préserve le statut suivi manuellement.
+    let mailAction = ActionItem(title: "Répondre — Splunk", sourceURL: "message://%3Cm1@x%3E")
+    db.saveActions([mailAction])
+    db.updateStatus(mailAction.id, .done)
+    db.saveActions([mailAction])
+    let reloadedMail = db.loadAllActions().filter { $0.id == mailAction.id }
+    #expect(reloadedMail.count == 1)
+    #expect(reloadedMail.first?.sourceURL == "message://%3Cm1@x%3E")
+    #expect(reloadedMail.first?.meetingID == nil)
+    #expect(reloadedMail.first?.status == .done)
+
+    // Supprimer la réunion efface ses actions par cascade FK (pas les actions de mail).
+    db.delete(meetingID)
+    #expect(db.loadAll().isEmpty)
+    #expect(db.loadAllActions().map(\.id) == [mailAction.id])
+}
+
+// MARK: - Historique des revues de mails
+
+@Test func mailReviewsPersistAndReplaceOnRetriage() {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "pepito-mailrev-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let db = Database(path: dir.appending(path: "pepito.db"))
+
+    func entry(_ date: String, _ idx: Int, bucket: MailBucket?, flagged: Bool = false,
+               actionID: UUID? = nil, messages: Int = 1) -> MailReviewEntry {
+        MailReviewEntry(
+            reviewDate: date, index: idx, subject: "Sujet \(idx)", sender: "exp\(idx)@x.fr",
+            url: "message://%3Cm\(idx)%3E", messageCount: messages, unread: 1, flagged: flagged,
+            bucket: bucket, importance: "Haute", action: "Répondre", deadline: "2026-07-28",
+            why: "pourquoi", summary: "résumé", actionID: actionID)
+    }
+
+    let actionID = UUID()
+    db.saveMailReview([
+        entry("2026-07-26", 1, bucket: .immediate, flagged: true, actionID: actionID, messages: 3),
+        entry("2026-07-26", 2, bucket: nil),                    // non classée → archivable
+    ])
+    db.saveMailReview([entry("2026-07-19", 1, bucket: .week)])
+
+    let reloaded = db.mailReview(date: "2026-07-26")
+    #expect(reloaded.count == 2)
+    #expect(reloaded[0].bucket == .immediate)
+    #expect(reloaded[0].actionID == actionID)
+    #expect(reloaded[0].url == "message://%3Cm1%3E")
+    #expect(reloaded[1].bucket == nil)                          // NULL relu comme « archivable »
+
+    // Historique : plus récent en tête, compteurs agrégés.
+    let history = db.mailReviews()
+    #expect(history.map(\.date) == ["2026-07-26", "2026-07-19"])
+    #expect(history[0].threadCount == 2)
+    #expect(history[0].messageCount == 4)
+    #expect(history[0].immediateCount == 1)
+    #expect(history[0].flaggedCount == 1)
+    #expect(history[0].actionCount == 1)
+
+    // Action traitée → la conversation sort du compteur « à traiter » de la pastille.
+    db.saveActions([ActionItem(id: actionID, title: "Répondre", status: .done)])
+    db.updateStatus(actionID, .done)                            // saveActions préserve le statut
+    #expect(db.mailReviews()[0].immediateCount == 0)
+    #expect(db.mailReviews()[0].threadCount == 2)               // la revue, elle, garde ses conversations
+
+    // Retrier le même jour remplace la revue au lieu de l'empiler.
+    db.saveMailReview([entry("2026-07-26", 1, bucket: .week)])
+    #expect(db.mailReview(date: "2026-07-26").count == 1)
+    #expect(db.mailReviews().count == 2)
+
+    db.deleteMailReview(date: "2026-07-26")
+    #expect(db.mailReviews().map(\.date) == ["2026-07-19"])
+}
+
+// MARK: - Export externe (Phase E)
+
+@Test func thingsURLEncodesTitleAndNotes() {
+    let url = ActionExport.thingsURL(title: "Envoyer la proposition", notes: "avant vendredi")
+    let s = try! #require(url).absoluteString
+    #expect(s.hasPrefix("things:///add"))
+    #expect(s.contains("title=Envoyer%20la%20proposition"))
+    #expect(s.contains("notes=avant%20vendredi"))
 }
 
 // MARK: - Token store

@@ -32,6 +32,9 @@ public struct ActionItem: Sendable, Equatable, Identifiable {
     public var dueDate: Date?
     public var status: ActionStatus
     public var priority: ActionPriority
+    /// Origine externe ouvrable (ex. `message://…` pour une action issue d'un mail). `nil` pour les
+    /// actions de réunion, dont l'origine est `meetingID`.
+    public var sourceURL: String?
 
     public init(
         id: UUID = UUID(),
@@ -42,7 +45,8 @@ public struct ActionItem: Sendable, Equatable, Identifiable {
         owner: String? = nil,
         dueDate: Date? = nil,
         status: ActionStatus = .todo,
-        priority: ActionPriority = .medium
+        priority: ActionPriority = .medium,
+        sourceURL: String? = nil
     ) {
         self.id = id
         self.parentID = parentID
@@ -53,6 +57,7 @@ public struct ActionItem: Sendable, Equatable, Identifiable {
         self.dueDate = dueDate
         self.status = status
         self.priority = priority
+        self.sourceURL = sourceURL
     }
 
     /// Une action est « ouverte » si elle reste à traiter (pour le suivi/relances).

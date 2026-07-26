@@ -26,5 +26,13 @@
     <string>Pépito capte la sortie audio système pour transcrire les autres participants de la réunion.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Pépito transcrit l'audio de vos réunions en texte, sur votre appareil.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Pépito lit l'événement de calendrier en cours pour pré-remplir le titre, les participants et le contexte de la réunion.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>Pépito lit l'événement de calendrier en cours pour pré-remplir le titre, les participants et le contexte de la réunion.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Pépito lit vos mails récents dans Mail pour les trier et en extraire vos actions. Aucun mail n'est modifié ni envoyé.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>Pépito crée des rappels à partir de vos plans d'action pour en assurer le suivi.</string>
 </dict>
 </plist>

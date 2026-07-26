@@ -29,11 +29,5 @@ struct PepitoApp: App {
         }
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
-
-        // Fenêtre de transcript en direct : fermée par défaut, ouverte depuis le menu.
-        Window("Transcript en direct", id: "live") {
-            LiveTranscriptView(app: app)
-        }
-        .defaultLaunchBehavior(.suppressed)
     }
 }

@@ -6,6 +6,7 @@ import TranscriptionKit
 import AIKit
 import VaultKit
 import ActionKit
+import MailKit
 
 /// Contrôleur applicatif principal (@MainActor, observable) : réglages, enregistrement, et
 /// pipeline de bout en bout capture → transcription → analyse agentic. Point d'entrée unique de
@@ -24,6 +25,21 @@ public final class MeetingCoordinator {
     public var actions: [ActionItem] = []
     /// Tags connus (liste réutilisable), pour le sélecteur de la fenêtre de nommage.
     public var allTags: [String] = []
+
+    /// Notes prises par l'utilisateur pendant la réunion en cours (fenêtre live + nommage). Enrichies
+    /// par l'IA (Phase C). Réinitialisées à chaque nouvel enregistrement.
+    public var draftNotes: String = ""
+
+    /// Pré-brief (Phase D) : actions ouvertes des réunions passées liées aux mêmes participants,
+    /// calculées au démarrage d'un enregistrement (« la dernière fois, il restait à… »).
+    public var preBrief: [ActionItem] = []
+
+    /// Triage de la boîte mail : en cours, dernier bilan/erreur, historique des revues (plus
+    /// récente en tête) et date de la dernière revue produite (pour la sélectionner dans l'UI).
+    public var isTriagingMail: Bool = false
+    public var mailStatus: String?
+    public var mailReviews: [MailReviewSummary] = []
+    public var lastMailReviewDate: String?
 
     // État d'exécution
     public var isRecording: Bool = false
@@ -69,6 +85,10 @@ public final class MeetingCoordinator {
     private let database: Database
     private let tokenStore: any TokenStore
     private let capture: any AudioCapturing
+    private let calendar: any CalendarProviding
+    /// Agenda de l'événement calendrier de la réunion en cours (contexte IA). ponytail: en mémoire
+    /// pour la session ; non repersisté, donc une reprise après relancement l'analyse sans agenda.
+    private var currentAgenda: String = ""
     private let makeTranscriber: @Sendable () -> any Transcriber
     private let makeLiveTranscriber: @Sendable (AudioSource) -> any LiveTranscribing
     private let makeProviderOverride: (@Sendable (Settings, String) -> (any AIProvider)?)?
@@ -94,6 +114,7 @@ public final class MeetingCoordinator {
         tokenStore: any TokenStore = KeychainTokenStore(),
         recordingsRoot: URL? = nil,
         capture: (any AudioCapturing)? = nil,
+        calendar: (any CalendarProviding)? = nil,
         transcriberFactory: @escaping @Sendable () -> any Transcriber = {
             SpeechAnalyzerTranscriber(log: { AppLog.shared.log("Transcription: \($0)") })
         },
@@ -106,6 +127,7 @@ public final class MeetingCoordinator {
         self.database = database
         self.tokenStore = tokenStore
         self.capture = capture ?? CaptureController(log: { AppLog.shared.log($0) })
+        self.calendar = calendar ?? EventKitCalendar()
         self.makeTranscriber = transcriberFactory
         self.makeLiveTranscriber = liveTranscriberFactory
         self.makeProviderOverride = providerFactory
@@ -116,7 +138,9 @@ public final class MeetingCoordinator {
 
         self.settings = settingsStore.load()
         self.meetings = database.loadAll()
+        self.actions = database.loadAllActions()
         self.allTags = database.allTags()
+        self.mailReviews = database.mailReviews()
         self.tokenPresent = ((try? tokenStore.token(for: tokenAccount)) ?? nil) != nil
     }
 
@@ -152,6 +176,7 @@ public final class MeetingCoordinator {
         let tempTitle = "Réunion du " + Self.titleDateFormatter.string(from: started)
         let sessionDir = recordingsRoot.appending(path: UUID().uuidString)
         processingPhase = nil
+        draftNotes = ""   // notes propres à la nouvelle réunion
 
         let sources = enabledSources()
         AppLog.shared.log("Démarrage enregistrement « \(tempTitle) » sources=\(sources.map(\.rawValue).sorted().joined(separator: "+")) dir=\(sessionDir.path)")
@@ -195,14 +220,19 @@ public final class MeetingCoordinator {
             return
         }
 
+        // Contexte calendrier (best effort) : pré-remplit titre + participants, mémorise l'agenda.
+        let event = await calendar.currentOrImminentEvent()
+        currentAgenda = event?.agenda ?? ""
         let meeting = Meeting(
-            title: tempTitle,
+            title: (event?.title.isEmpty == false) ? event!.title : tempTitle,
             startedAt: started,
+            participants: event?.participants ?? [],
             status: .recording,
             sessionDirPath: sessionDir.path
         )
         currentMeeting = meeting
         currentSessionDir = sessionDir
+        preBrief = relevantOpenActions(for: meeting)   // « la dernière fois, il restait à… »
         isRecording = true
         persist(meeting)   // résilience : la réunion existe en base dès le départ
         startLevelSampling()
@@ -255,6 +285,7 @@ public final class MeetingCoordinator {
         meeting.endedAt = Date()
         let live = TranscriptFormatter.plainText(liveSegments)
         meeting.transcript = live.isEmpty ? nil : live
+        meeting.userNotes = draftNotes
         meeting.status = .awaitingName
         currentMeeting = meeting
         persist(meeting)
@@ -272,6 +303,7 @@ public final class MeetingCoordinator {
         meeting.title = cleanTitle
         meeting.folderPath = PathBuilder.meetingFolder(date: meeting.startedAt, title: cleanTitle)
         meeting.tags = cleanTags
+        meeting.userNotes = draftNotes   // notes éventuellement éditées dans la fenêtre de nommage
         database.addTags(cleanTags)
         allTags = database.allTags()
         currentMeeting = meeting
@@ -318,16 +350,22 @@ public final class MeetingCoordinator {
             statusMessage = "Analyse IA…"
             persist(meeting)
             guard let provider = provider() else { throw CoordinatorError.notConfigured }
-            let vaultRoot = settings.vaultPath.isEmpty ? NSTemporaryDirectory() : settings.vaultPath
             AppLog.shared.log("Analyse IA via \(settings.aiBaseURL) (modèle \(settings.aiModel))…")
-            let pipeline = MeetingPipeline(provider: provider, vault: Vault(root: URL(fileURLWithPath: vaultRoot)))
+            let pipeline = MeetingPipeline(provider: provider, vault: vault())
+            let followUp = relevantOpenActions(for: meeting)
             let result = try await pipeline.process(
                 meeting: meeting,
                 transcript: transcript,
-                agenticPrompt: settings.agenticPrompt
+                agenticPrompt: settings.agenticPrompt,
+                context: currentAgenda,
+                userNotes: meeting.userNotes,
+                openActions: Self.openActionsText(followUp)
             )
             actions.removeAll { $0.meetingID == meeting.id }   // idempotent en cas de reprise
             actions.append(contentsOf: result.actions)
+            database.saveActions(result.actions)
+            // Suivi cross-réunion : appliquer les résolutions détectées sur les actions passées.
+            for update in result.actionUpdates { updateActionStatus(update.id, to: update.status) }
             meeting.status = .done
             processingPhase = .done
             statusMessage = "Terminé — \(result.actions.count) action(s)."
@@ -396,6 +434,62 @@ public final class MeetingCoordinator {
     }
 
     /// URL du dossier de la réunion dans le Vault (pour « Ouvrir l'emplacement »), sinon dossier audio.
+    /// Supprime une réunion : documents du Vault, fichiers audio, et lignes en base (actions + tags
+    /// en cascade). Action **destructive** — l'UI confirme avant d'appeler.
+    public func deleteMeeting(_ meeting: Meeting) {
+        // Ne pas supprimer la réunion en cours d'enregistrement/traitement.
+        guard !(currentMeeting?.id == meeting.id && (isRecording || isProcessing)) else { return }
+
+        // Dossier du Vault — garde : jamais la racine (folderPath vide → on effacerait tout le Vault).
+        if !settings.vaultPath.isEmpty, !meeting.folderPath.isEmpty {
+            let folder = URL(fileURLWithPath: settings.vaultPath).appending(path: meeting.folderPath)
+            try? FileManager.default.removeItem(at: folder)
+        }
+        // Fichiers audio de la session.
+        if let dir = meeting.sessionDirPath {
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: dir))
+        }
+
+        database.delete(meeting.id)
+        if currentMeeting?.id == meeting.id { currentMeeting = nil }
+        meetings = database.loadAll()
+        actions = database.loadAllActions()
+        AppLog.shared.log("Réunion supprimée : « \(meeting.title) »")
+    }
+
+    /// Résumé Markdown d'une réunion, lu depuis le Vault (`summary.md`, front-matter retiré).
+    /// `nil` si le Vault n'est pas configuré ou si l'analyse n'a rien écrit.
+    public func summaryMarkdown(for meeting: Meeting) -> String? {
+        guard !settings.vaultPath.isEmpty, !meeting.folderPath.isEmpty else { return nil }
+        let vault = Vault(root: URL(fileURLWithPath: settings.vaultPath))
+        let path = PathBuilder.summaryPath(meetingFolder: meeting.folderPath)
+        guard let doc = try? vault.read(relativePath: path, type: .summary) else { return nil }
+        let markdown = doc.markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        return markdown.isEmpty ? nil : markdown
+    }
+
+    /// Réécrit `summary.md` avec le Markdown édité à la main, front-matter conservé. Le Vault
+    /// reste la source de vérité : rien n'est dupliqué en base.
+    public func saveSummary(_ markdown: String, for meeting: Meeting) {
+        guard !settings.vaultPath.isEmpty, !meeting.folderPath.isEmpty else {
+            statusMessage = "Vault non configuré : résumé non enregistré."
+            return
+        }
+        let vault = self.vault()
+        let path = PathBuilder.summaryPath(meetingFolder: meeting.folderPath)
+        let existing = try? vault.read(relativePath: path, type: .summary)
+        do {
+            try vault.write(VaultDocument(
+                relativePath: path,
+                type: .summary,
+                frontMatter: existing?.frontMatter ?? ["title": meeting.title],
+                markdown: markdown))
+        } catch {
+            statusMessage = "Résumé non enregistré : \(error.localizedDescription)"
+            AppLog.shared.log("Écriture du résumé échouée : \(AppLog.describe(error))", level: "ERROR")
+        }
+    }
+
     public func location(for meeting: Meeting) -> URL? {
         if !settings.vaultPath.isEmpty, !meeting.folderPath.isEmpty {
             return URL(fileURLWithPath: settings.vaultPath).appending(path: meeting.folderPath)
@@ -586,6 +680,130 @@ public final class MeetingCoordinator {
         ActionTracking.overdueItems(asOf: now, in: actions)
     }
 
+    private let reminders = RemindersExporter()
+
+    // MARK: - Triage de la boîte mail
+
+    private let mailFetcher = MailFetcher()
+
+    /// Trie la boîte mail des `days` derniers jours : extraction Mail.app → digest → IA → revue
+    /// Markdown dans le Vault + actions dans le même suivi que celles des réunions.
+    /// L'extraction est longue (~1 min sur une grosse boîte) mais tourne hors du MainActor.
+    public func triageMail(days: Int? = nil) async {
+        guard !isTriagingMail else { return }
+        let period = days ?? settings.mailDays
+        guard let provider = provider(), settings.isConfigured else {
+            mailStatus = CoordinatorError.notConfigured.errorDescription
+            return
+        }
+
+        isTriagingMail = true
+        mailStatus = "Lecture de Mail (\(period) j) — ça peut prendre une minute…"
+        defer { isTriagingMail = false }
+
+        do {
+            let fetched = try await mailFetcher.fetch(days: period, limit: settings.mailLimit)
+            // Aucun contenu de mail dans les journaux : uniquement des compteurs.
+            AppLog.shared.log("Mails extraits : \(fetched.messageCount) messages, \(fetched.threads.count) conversations")
+            guard !fetched.threads.isEmpty else {
+                mailStatus = "Aucun mail reçu sur cette période."
+                return
+            }
+
+            mailStatus = "Analyse de \(fetched.threads.count) conversations…"
+            let pipeline = MailPipeline(provider: provider, vault: vault())
+            let result = try await pipeline.process(
+                result: fetched,
+                prompt: settings.mailPrompt,
+                openActions: Self.openActionsText(Array(openActions.prefix(20))))
+
+            database.saveActions(result.actions)
+            database.saveMailReview(result.entries)
+            actions = database.loadAllActions()
+            mailReviews = database.mailReviews()
+            lastMailReviewDate = result.entries.first?.reviewDate
+            mailStatus = "\(result.threadCount) conversations triées, \(result.actions.count) action(s)."
+            if !result.ignoredIDs.isEmpty {
+                AppLog.shared.log("Triage mail : \(result.ignoredIDs.count) id(s) hors limites ignoré(s)", level: "WARN")
+            }
+        } catch {
+            mailStatus = error.localizedDescription
+            AppLog.shared.log("Triage mail échoué : \(AppLog.describe(error))", level: "ERROR")
+        }
+    }
+
+    /// Conversations d'une revue (lues à la sélection, pas à chaque rendu).
+    public func mailReview(date: String) -> [MailReviewEntry] {
+        database.mailReview(date: date)
+    }
+
+    /// Retire une revue de l'historique. Les actions qu'elle a créées restent dans le suivi.
+    public func deleteMailReview(date: String) {
+        database.deleteMailReview(date: date)
+        mailReviews = database.mailReviews()
+        if lastMailReviewDate == date { lastMailReviewDate = nil }
+    }
+
+    /// Chemin du document Markdown correspondant dans le Vault (affiché en légende).
+    public func mailReportPath(date: String) -> String { PathBuilder.mailReportPath(day: date) }
+
+    /// Exporte les actions ouvertes vers Rappels (Phase E). Met à jour `statusMessage` avec le bilan.
+    public func exportOpenActionsToReminders() async {
+        let n = await reminders.export(openActions)
+        statusMessage = n > 0 ? "\(n) action(s) exportée(s) vers Rappels." : "Export Rappels indisponible (accès refusé ?)."
+    }
+
+    /// Change le statut d'une action (édition depuis le dashboard de suivi) et le persiste.
+    /// Passage obligé de tout changement de statut : c'est ici que les compteurs de revue de mails
+    /// (pastille « à traiter » de la barre latérale) sont recalculés.
+    public func updateActionStatus(_ id: UUID, to status: ActionStatus) {
+        if let i = actions.firstIndex(where: { $0.id == id }) { actions[i].status = status }
+        database.updateStatus(id, status)
+        mailReviews = database.mailReviews()
+    }
+
+    /// Édition manuelle complète d'une action (titre, responsable, échéance, priorité, statut).
+    public func updateAction(_ action: ActionItem) {
+        if let i = actions.firstIndex(where: { $0.id == action.id }) { actions[i] = action }
+        database.saveActions([action])
+        updateActionStatus(action.id, to: action.status)   // saveActions préserve volontairement le statut
+    }
+
+    /// Édition manuelle d'une réunion (titre, tags, participants) depuis sa fiche.
+    public func updateMeeting(_ meeting: Meeting) {
+        persist(meeting)
+        allTags = database.allTags()
+        if currentMeeting?.id == meeting.id { currentMeeting = meeting }
+    }
+
+    /// Actions ouvertes de réunions **passées** pertinentes pour la réunion `meeting` : mêmes
+    /// participants (via l'owner ou les participants de la réunion d'origine). Sert au pré-brief et
+    /// à l'auto-résolution. Bornée pour ne pas gonfler le prompt.
+    /// ponytail: overlap simple par nom ; pas de désambiguïsation d'identité (à affiner si besoin).
+    private func relevantOpenActions(for meeting: Meeting) -> [ActionItem] {
+        let participants = Set(meeting.participants.map { $0.lowercased() })
+        let byMeeting = Dictionary(
+            meetings.map { ($0.id, Set($0.participants.map { $0.lowercased() })) },
+            uniquingKeysWith: { a, _ in a })
+        let open = ActionTracking.sortedForFollowUp(ActionTracking.openItems(in: actions))
+        let filtered = open.filter { a in
+            guard a.meetingID != meeting.id else { return false }        // pas les actions de CETTE réunion
+            if participants.isEmpty { return true }                       // participants inconnus → tout (borné)
+            if let owner = a.owner, participants.contains(owner.lowercased()) { return true }
+            if let mid = a.meetingID, let p = byMeeting[mid], !p.isDisjoint(with: participants) { return true }
+            return false
+        }
+        return Array(filtered.prefix(20))
+    }
+
+    private static func openActionsText(_ items: [ActionItem]) -> String {
+        items.map { a in
+            var s = "- \(a.id.uuidString): \(a.title)"
+            if let owner = a.owner, !owner.isEmpty { s += " (@\(owner))" }
+            return s
+        }.joined(separator: "\n")
+    }
+
     // MARK: - Privé
 
     enum CoordinatorError: LocalizedError {
@@ -610,6 +828,12 @@ public final class MeetingCoordinator {
         if settings.flags.captureMicrophone { sources.insert(.microphone) }
         if settings.flags.captureSystemAudio { sources.insert(.system) }
         return sources.isEmpty ? [.microphone] : sources
+    }
+
+    /// Vault courant (repli sur un dossier temporaire si aucun n'est configuré).
+    private func vault() -> Vault {
+        let root = settings.vaultPath.isEmpty ? NSTemporaryDirectory() : settings.vaultPath
+        return Vault(root: URL(fileURLWithPath: root))
     }
 
     private func provider() -> (any AIProvider)? {

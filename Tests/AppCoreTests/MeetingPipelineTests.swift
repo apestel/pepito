@@ -29,6 +29,26 @@ final class FailingOnceProvider: AIProvider {
     }
 }
 
+@Test func pipelineParsesActionUpdatesForFollowUp() async throws {
+    let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "pepito-followup-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    let openID = UUID()
+    let provider = PipelineScriptedProvider([
+        #"{"summary":"OK","actions":[],"action_updates":[{"id":"\#(openID.uuidString)","status":"done"},"# +
+        #"{"id":"pas-un-uuid","status":"done"},{"id":"\#(UUID().uuidString)","status":"n-importe-quoi"}]}"#,
+    ])
+    let pipeline = MeetingPipeline(provider: provider, vault: Vault(root: tmp))
+
+    let result = try await pipeline.process(
+        meeting: Meeting(title: "N+1", folderPath: "f"), transcript: "t",
+        openActions: "- \(openID.uuidString): Envoyer la proposition")
+
+    // Seul l'update valide (uuid + statut connus) est retenu ; les mal formés sont filtrés.
+    #expect(result.actionUpdates.count == 1)
+    #expect(result.actionUpdates.first?.id == openID)
+    #expect(result.actionUpdates.first?.status == .done)
+}
+
 @Test func pipelineParsesAnalysisAndWritesVault() async throws {
     let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
         .appending(path: "pepito-pipeline-\(UUID().uuidString)")

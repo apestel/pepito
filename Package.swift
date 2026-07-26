@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "AIKit", targets: ["AIKit"]),
         .library(name: "VaultKit", targets: ["VaultKit"]),
         .library(name: "ActionKit", targets: ["ActionKit"]),
+        .library(name: "MailKit", targets: ["MailKit"]),
     ],
     targets: [
         // App shell (SwiftUI, menu bar + fenêtre principale). Ne dépend que d'AppCore.
@@ -25,7 +26,7 @@ let package = Package(
         // Coordination + modèles de domaine. Point d'assemblage des Kits.
         .target(
             name: "AppCore",
-            dependencies: ["CaptureKit", "TranscriptionKit", "AIKit", "VaultKit", "ActionKit"],
+            dependencies: ["CaptureKit", "TranscriptionKit", "AIKit", "VaultKit", "ActionKit", "MailKit"],
             linkerSettings: [.linkedLibrary("sqlite3")] // module SQLite3 fourni par le SDK macOS
         ),
         // Kits : ne dépendent PAS de l'UI ni d'AppCore.
@@ -34,6 +35,7 @@ let package = Package(
         .target(name: "AIKit"),
         .target(name: "VaultKit"),
         .target(name: "ActionKit"),
+        .target(name: "MailKit"),
 
         // Tests (swift-testing).
         .testTarget(name: "AppCoreTests", dependencies: ["AppCore"]),
@@ -42,5 +44,6 @@ let package = Package(
         .testTarget(name: "AIKitTests", dependencies: ["AIKit"]),
         .testTarget(name: "VaultKitTests", dependencies: ["VaultKit"]),
         .testTarget(name: "ActionKitTests", dependencies: ["ActionKit"]),
+        .testTarget(name: "MailKitTests", dependencies: ["MailKit"]),
     ]
 )

@@ -9,6 +9,9 @@ public struct PipelineResult: Sendable {
     public let actions: [ActionItem]
     public let documentsWritten: [String]
     public let summary: String?
+    /// Mises à jour de statut d'actions **ouvertes de réunions passées** que le transcript a permis
+    /// de résoudre (suivi cross-réunion, Phase D). À appliquer par l'appelant (accès base).
+    public let actionUpdates: [(id: UUID, status: ActionStatus)]
 }
 
 /// Analyse d'un transcript en **une seule passe** (aucun appel d'outil) : le modèle renvoie un JSON
@@ -27,7 +30,10 @@ public struct MeetingPipeline {
     public func process(
         meeting: Meeting,
         transcript: String,
-        agenticPrompt: String = PromptTemplate.defaultAgenticPrompt
+        agenticPrompt: String = PromptTemplate.defaultAgenticPrompt,
+        context: String = "",
+        userNotes: String = "",
+        openActions: String = ""
     ) async throws -> PipelineResult {
         let dateString = Self.dateFormatter.string(from: meeting.startedAt)
         let systemPrompt = PromptTemplate.render(
@@ -36,7 +42,10 @@ public struct MeetingPipeline {
                 transcript: transcript,
                 date: dateString,
                 participants: meeting.participants.joined(separator: ", "),
-                vaultTree: (try? vault.treeOutline()) ?? ""
+                vaultTree: (try? vault.treeOutline()) ?? "",
+                context: context,
+                userNotes: userNotes,
+                openActions: openActions
             )
         ) + "\n\n" + Self.jsonContract
 
@@ -47,9 +56,11 @@ public struct MeetingPipeline {
 
         let analysis = try Self.parse(reply.content)
 
-        // Construire les plans d'action (aplatir la hiérarchie via parentID).
+        // Construire les plans d'action (aplatir la hiérarchie via parentID) ET rendre le Markdown
+        // en une passe, avec l'`id` embarqué en commentaire HTML pour rester reconstructible (§4).
         var actions: [ActionItem] = []
-        func add(_ list: [AnalysisResult.Action], parent: UUID?) {
+        var planLines: [String] = []
+        func add(_ list: [AnalysisResult.Action], parent: UUID?, depth: Int) {
             for a in list {
                 let item = ActionItem(
                     parentID: parent,
@@ -61,10 +72,15 @@ public struct MeetingPipeline {
                     priority: Self.parsePriority(a.priority)
                 )
                 actions.append(item)
-                add(a.children ?? [], parent: item.id)
+                var line = String(repeating: "  ", count: depth) + "- \(item.title)"
+                if let owner = item.owner, !owner.isEmpty { line += " (@\(owner))" }
+                if let due = a.dueDate, !due.isEmpty { line += " — échéance \(due)" }
+                line += " <!-- id:\(item.id.uuidString) -->"
+                planLines.append(line)
+                add(a.children ?? [], parent: item.id, depth: depth + 1)
             }
         }
-        add(analysis.actions ?? [], parent: nil)
+        add(analysis.actions ?? [], parent: nil, depth: 0)
 
         // Tags du summary : ceux saisis par l'utilisateur (prioritaires) + ceux proposés par le
         // modèle, dédupliqués sans casse en conservant l'ordre.
@@ -93,16 +109,23 @@ public struct MeetingPipeline {
                 relativePath: path,
                 type: .actionPlan,
                 frontMatter: ["title": meeting.title, "date": dateString],
-                markdown: Self.renderActionPlan(analysis.actions ?? [], depth: 0)
+                markdown: planLines.joined(separator: "\n")
             ))
             documentsWritten.append(path)
+        }
+
+        // Mises à jour de suivi cross-réunion : ne garder que les id/statuts valides.
+        let actionUpdates: [(id: UUID, status: ActionStatus)] = (analysis.actionUpdates ?? []).compactMap {
+            guard let id = UUID(uuidString: $0.id), let status = ActionStatus(rawValue: $0.status) else { return nil }
+            return (id, status)
         }
 
         return PipelineResult(
             finalText: analysis.summary ?? "",
             actions: actions,
             documentsWritten: documentsWritten,
-            summary: analysis.summary
+            summary: analysis.summary,
+            actionUpdates: actionUpdates
         )
     }
 
@@ -122,9 +145,19 @@ public struct MeetingPipeline {
                 case dueDate = "due_date"
             }
         }
+        struct Update: Decodable {
+            let id: String
+            let status: String
+        }
         let summary: String?
         let tags: [String]?
         let actions: [Action]?
+        let actionUpdates: [Update]?
+
+        enum CodingKeys: String, CodingKey {
+            case summary, tags, actions
+            case actionUpdates = "action_updates"
+        }
     }
 
     static let jsonContract = """
@@ -136,8 +169,14 @@ public struct MeetingPipeline {
         {"title":"<titre>","details":"<détails>","owner":"<responsable ou null>",
          "due_date":"<AAAA-MM-JJ ou null>","priority":"high|medium|low",
          "children":[ { … même structure pour les sous-tâches … } ]}
+      ],
+      "action_updates": [
+        {"id":"<id EXACT d'une action ouverte fournie ci-dessus que le transcript permet de résoudre>",
+         "status":"done|in-progress|blocked|dropped"}
       ]
     }
+    "action_updates" ne concerne QUE les actions ouvertes listées dans le contexte : n'y mets un
+    élément que si le transcript indique clairement un changement de statut ; sinon renvoie [].
     """
 
     static func parse(_ content: String) throws -> AnalysisResult {
@@ -167,19 +206,6 @@ public struct MeetingPipeline {
             s = String(s[open...close])
         }
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    static func renderActionPlan(_ list: [AnalysisResult.Action], depth: Int) -> String {
-        list.map { action -> String in
-            let indent = String(repeating: "  ", count: depth)
-            var line = "\(indent)- \(action.title)"
-            if let owner = action.owner, !owner.isEmpty { line += " (@\(owner))" }
-            if let due = action.dueDate, !due.isEmpty { line += " — échéance \(due)" }
-            if let children = action.children, !children.isEmpty {
-                line += "\n" + renderActionPlan(children, depth: depth + 1)
-            }
-            return line
-        }.joined(separator: "\n")
     }
 
     static func parsePriority(_ raw: String?) -> ActionPriority {

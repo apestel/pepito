@@ -107,6 +107,29 @@ final class MockCapturer: AudioCapturing {
     // Les tags saisis se retrouvent dans le front-matter du summary.
     let summary = try vault.read(relativePath: PathBuilder.summaryPath(meetingFolder: folder), type: .summary)
     #expect(summary.frontMatter["tags"]?.contains("budget") == true)
+
+    // Résumé relu pour l'UI : corps Markdown seul (front-matter retiré), nil si rien dans le Vault.
+    #expect(coordinator.summaryMarkdown(for: coordinator.meetings.first!) == "Résumé")
+    #expect(coordinator.summaryMarkdown(for: Meeting(title: "Jamais analysée")) == nil)
+
+    // Éditions manuelles (fiche réunion) : participants, tags, action — persistées en base.
+    var edited = coordinator.meetings.first!
+    edited.participants = ["Alice", "Bob"]
+    edited.tags = ["budget", "q3"]
+    coordinator.updateMeeting(edited)
+    var action = coordinator.actions.first!
+    action.title = "Préparer le budget Q3"
+    action.owner = "Bob"
+    action.status = .inProgress
+    coordinator.updateAction(action)
+
+    let reloaded = Database(path: root.appending(path: "pepito.db"))
+    #expect(reloaded.loadAll().first?.participants == ["Alice", "Bob"])
+    #expect(reloaded.loadAll().first?.tags == ["budget", "q3"])
+    #expect(coordinator.allTags.contains("q3"))
+    #expect(reloaded.loadAllActions().first?.title == "Préparer le budget Q3")
+    #expect(reloaded.loadAllActions().first?.owner == "Bob")
+    #expect(reloaded.loadAllActions().first?.status == .inProgress)
 }
 
 @MainActor

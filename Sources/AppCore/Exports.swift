@@ -3,3 +3,4 @@
 @_exported import ActionKit
 @_exported import VaultKit
 @_exported import TranscriptionKit
+@_exported import MailKit
