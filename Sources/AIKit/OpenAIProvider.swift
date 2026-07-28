@@ -39,8 +39,11 @@ public enum OpenAIResponseParser {
         } catch {
             throw AIError.decoding("\(error)")
         }
-        guard let first = body.choices.first else { throw AIError.emptyResponse }
-        return ChatMessage(role: .assistant, content: first.message.content)
+        guard let first = body.choices.first else { throw AIError.emptyResponse() }
+        guard let content = first.message.content, !content.isEmpty else {
+            throw AIError.emptyResponse(finishReason: first.finishReason)
+        }
+        return ChatMessage(role: .assistant, content: content)
     }
 }
 

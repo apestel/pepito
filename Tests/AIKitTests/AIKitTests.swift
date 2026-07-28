@@ -51,7 +51,16 @@ import Foundation
 
 @Test func emptyChoicesThrows() {
     let json = #"{"choices":[]}"#
-    #expect(throws: AIError.emptyResponse) {
+    #expect(throws: AIError.emptyResponse()) {
+        try OpenAIResponseParser.parseChatMessage(from: Data(json.utf8))
+    }
+}
+
+/// Une gateway peut renvoyer `content: null` (ici : le modèle est parti en tool-call). C'est une
+/// réponse vide qui doit le dire, pas un `DecodingError` illisible remonté jusqu'à l'utilisateur.
+@Test func nullContentThrowsEmptyResponseWithFinishReason() {
+    let json = #"{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null}}]}"#
+    #expect(throws: AIError.emptyResponse(finishReason: "tool_calls")) {
         try OpenAIResponseParser.parseChatMessage(from: Data(json.utf8))
     }
 }
