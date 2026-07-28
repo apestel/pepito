@@ -71,10 +71,13 @@ mail content never lands in the logs.
     Text selection becomes per-line instead of continuous — accepted.
 - `symbolEffect(.variableColor)` on the recording indicator was profiled at **0.1 %**, not the
   suspected hot spot. Left alone.
-- The spectrogram costs ~17 % — but only while the menu-bar popover is open (140 columns × 64
-  bands × 2 sources = 17 920 `ctx.fill` per frame at 30 Hz). Its `ponytail:` note already records
-  the fix (one `CGImage` instead of per-cell fills); not worth it until the popover is a real
-  steady state.
+- The spectrogram profiled at ~17 % while the menu-bar popover is open: 140 columns × 64 bands ×
+  2 sources = 17 920 `ctx.fill` per frame at 30 Hz, each allocating a `Path`, a `CGRect` and a
+  `Color`. `RecordingLevelsView` now composites both sources into one RGBA `CGImage` (one pixel
+  per cell, premultiplied source-over, drawn with `.interpolation(.none)` to keep the cells
+  crisp) and draws it in a single `ctx.draw`. This is the upgrade its `ponytail:` note named.
+  New `PepitoTests` target covers the hand-rolled pixel math: row flip, threshold, source-over
+  ordering, uneven column counts.
 
 ### Added — profiling
 

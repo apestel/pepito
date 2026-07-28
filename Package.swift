@@ -38,6 +38,7 @@ let package = Package(
         .target(name: "MailKit"),
 
         // Tests (swift-testing).
+        .testTarget(name: "PepitoTests", dependencies: ["Pepito"]),
         .testTarget(name: "AppCoreTests", dependencies: ["AppCore"]),
         .testTarget(name: "CaptureKitTests", dependencies: ["CaptureKit"]),
         .testTarget(name: "TranscriptionKitTests", dependencies: ["TranscriptionKit"]),

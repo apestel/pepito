@@ -66,9 +66,14 @@ struct RecordingLevelsView: View {
     let system: [[Float]]
 
     var body: some View {
-        Canvas { ctx, size in
-            heatmap(mic, in: ctx, size: size, color: .blue)
-            heatmap(system, in: ctx, size: size, color: .orange)
+        // Une image de la taille de la grille (1 pixel = 1 cellule), tracée en un seul draw.
+        let image = Self.heatmap(mic: mic, system: system)
+        return Canvas { ctx, size in
+            guard let image else { return }
+            ctx.draw(
+                Image(decorative: image, scale: 1).interpolation(.none), // .none : cellules nettes
+                in: CGRect(origin: .zero, size: size)
+            )
         }
         .frame(height: 90)
         .background(.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 6))
@@ -81,22 +86,44 @@ struct RecordingLevelsView: View {
         }
     }
 
-    // ponytail: fill par cellule avec seuil ; si ça rame, passer à un CGImage tracé en une fois.
-    private func heatmap(_ columns: [[Float]], in ctx: GraphicsContext, size: CGSize, color: Color) {
-        guard !columns.isEmpty else { return }
-        let colW = size.width / CGFloat(columns.count)
-        for (i, column) in columns.enumerated() {
-            guard !column.isEmpty else { continue }
-            let bandH = size.height / CGFloat(column.count)
-            let x = CGFloat(i) * colW
-            for (j, v) in column.enumerated() where v > 0.06 {
-                // Basses fréquences en bas.
-                let y = size.height - CGFloat(j + 1) * bandH
-                ctx.fill(
-                    Path(CGRect(x: x, y: y, width: colW + 0.5, height: bandH + 0.5)),
-                    with: .color(color.opacity(Double(min(1, v))))
-                )
+    static let seuil: Float = 0.06                  // en-dessous : cellule transparente
+    private static let bleu: (Float, Float, Float) = (0, 0.478, 1)      // .blue macOS
+    private static let orange: (Float, Float, Float) = (1, 0.584, 0)    // .orange macOS
+
+    /// Compose les deux spectrogrammes en une image RGBA (alpha prémultiplié), un pixel par
+    /// cellule. Remplace 140 × 64 × 2 = 17 920 `ctx.fill` par frame — à 30 Hz, ~540 000
+    /// remplissages par seconde, chacun allouant un `Path`, un `CGRect` et une `Color`.
+    static func heatmap(mic: [[Float]], system: [[Float]]) -> CGImage? {
+        let w = max(mic.count, system.count)
+        let h = max(mic.first?.count ?? 0, system.first?.count ?? 0)
+        guard w > 0, h > 0 else { return nil }
+
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        // Source-over sur du transparent : chaque source recouvre la précédente, comme les deux
+        // passes de fill d'origine. Ligne 0 en haut, donc les basses fréquences (bande 0) en bas.
+        for (columns, rgb) in [(mic, bleu), (system, orange)] where !columns.isEmpty {
+            for x in 0..<w {
+                let column = columns[x * columns.count / w]
+                guard !column.isEmpty else { continue }
+                for y in 0..<h {
+                    let v = column[(h - 1 - y) * column.count / h]
+                    guard v > seuil else { continue }
+                    let a = min(1, v)
+                    let i = (y * w + x) * 4
+                    for (k, c) in [rgb.0, rgb.1, rgb.2].enumerated() {
+                        px[i + k] = UInt8(min(255, (c * a + Float(px[i + k]) / 255 * (1 - a)) * 255))
+                    }
+                    px[i + 3] = UInt8(min(255, (a + Float(px[i + 3]) / 255 * (1 - a)) * 255))
+                }
             }
+        }
+
+        return px.withUnsafeMutableBytes { buf in
+            CGContext(
+                data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )?.makeImage()
         }
     }
 }
