@@ -202,6 +202,18 @@ L'app doit tourner ; le script trouve le PID seul. Sorties dans `.build/` (gitig
 (flamegraph, ouvrir dans un navigateur) et le `.txt` brut. **Le classement imprimé sur stdout suffit
 à décider** — pas besoin d'ouvrir le SVG.
 
+**Profiler un build `release`**, sinon on mesure le coût du mode debug, pas celui de l'app :
+
+```bash
+./build-app.sh release && open .build/Pepito.app && ./profile.py
+```
+
+`build-app.sh` construit en **debug par défaut**. En debug les génériques ne sont pas spécialisés
+et le retain/release n'est pas élidé : le profil se remplit de `_swift_getGenericMetadata`,
+`swift_getAssociatedTypeWitness`, `IndexingIterator.next()`, `Collection.formIndex(after:)` — du
+bruit de configuration qui disparaît en release. Si ces symboles dominent le self time, arrêter
+d'optimiser et rebuild en release avant toute autre conclusion.
+
 Comment le lire :
 - **`% CPU instantané`** en tête : le seul chiffre qui compte pour un avant/après.
 - **Colonnes `actif` / `total`** : `sample` échantillonne *tous* les threads, endormis compris.

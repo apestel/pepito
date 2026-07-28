@@ -14,13 +14,16 @@ import colorsys, html, os, random, re, subprocess, sys, time
 SECONDS = int(sys.argv[1]) if len(sys.argv) > 1 else 10
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
-# ponytail: liste en dur des symboles « thread bloqué ». sample(1) échantillonne *tous* les threads,
-# endormis compris — sans ce filtre un pool inactif pèse autant que le thread principal saturé et le
-# classement ment. À compléter si un thread manifestement idle remonte en tête.
+# ponytail: liste en dur des symboles « thread qui ne travaille pas ». sample(1) échantillonne *tous*
+# les threads, endormis compris — sans ce filtre un pool inactif pèse autant que le thread principal
+# saturé et le classement ment. À compléter si un thread manifestement idle remonte en tête.
+# `start_wqthread` en feuille = thread de workqueue attrapé pendant sa création, pile incomplète :
+# ce n'est pas du travail, et sans lui un pic de création de threads (réponses XPC) passe en tête.
 BLOCKED = (
     '__workq_kernreturn', 'mach_msg2_trap', '__psynch_cvwait', 'kevent', 'kevent_id',
     'semaphore_wait_trap', 'semaphore_timedwait_trap', 'semaphore_wait_signal_trap',
     '__select', '__ulock_wait', 'poll', 'read', '__accept', 'thread_switch', 'swtch_pri',
+    'start_wqthread',
 )
 
 LINE = re.compile(r'^(?P<pre>[ +!:|]*?)(?P<n>\d+) (?P<sym>.*)$')
