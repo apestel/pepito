@@ -50,6 +50,20 @@ Read-only by design: Pépito never modifies, flags or sends mail. Only the diges
 300-character preview per conversation) reaches the AI endpoint — never full message bodies — and
 mail content never lands in the logs.
 
+### Fixed — Swift 6 concurrency warnings
+
+- `EchoCancellingProcessor.readMono16k` fed its whole buffer to `AVAudioConverter` through a
+  `@Sendable` input block that captured a non-`Sendable` `AVAudioPCMBuffer` and mutated a captured
+  `var` — three warnings. A small `@unchecked Sendable` box now hands the buffer over once and
+  returns nil afterwards, which also removes the separate `supplied` flag (same shape as
+  `LivePendingBuffer` in TranscriptionKit; kept local rather than coupling the two Kits over four
+  lines). New round-trip test: 48 kHz stereo in, mono 16 kHz out, verified to fail if the box breaks.
+- `CoreAudioTapSystemAudioRecorder.stringProperty` received a +1 `CFString` into a Swift `CFString`
+  variable. Now goes through `Unmanaged<CFString>` and `takeRetainedValue()`, making the ownership
+  transfer explicit.
+
+Clean `swift build -c release` and `swift build` are now warning-free.
+
 ### Fixed — 100 % CPU during long meetings
 
 Net result, measured on a `release` build with the live transcript and the menu-bar popover both

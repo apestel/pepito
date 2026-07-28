@@ -239,7 +239,7 @@ sous `Sources/`, tests sous `Tests/`, app exécutable `Sources/Pepito`.
 
 ## 11. État & feuille de route (résumé)
 
-- **Statut actuel** : Phases 0 → 7 implémentées + triage mail natif (86 tests verts, `swift build`/`swift test` OK,
+- **Statut actuel** : Phases 0 → 7 implémentées + triage mail natif (87 tests verts, `swift build`/`swift test` OK,
   l'app se lance). Logique testée : Vault, client IA OpenAI-compatible (requête/réponse/SSE/chunking),
   boucle agentic + outils + `MeetingPipeline`, hiérarchie & suivi des actions, réglages/Keychain,
   `MeetingStore`, et l'orchestration end-to-end `MeetingCoordinator` (capture→transcription→analyse).

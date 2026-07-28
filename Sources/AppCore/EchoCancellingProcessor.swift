@@ -32,13 +32,20 @@ enum EchoCancellingProcessor {
 
         let capacity = AVAudioFrameCount(Double(srcFrames) * sampleRate / srcFormat.sampleRate) + 1024
         guard let outBuf = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return [] }
-        var supplied = false
+        // Le bloc d'entrée du convertisseur est `@Sendable`, alors qu'AVAudioPCMBuffer ne l'est pas
+        // et qu'un `var` capturé serait muté hors du fil de l'appelant — deux choses que Swift 6
+        // refuse. La boîte porte les deux : elle rend le buffer une fois, puis nil, ce qui signale
+        // la fin de l'entrée sans drapeau séparé. (Jumelle de `LivePendingBuffer` dans
+        // TranscriptionKit ; 4 lignes, pas de quoi coupler les deux Kits.)
+        let pending = PendingBuffer(inBuf)
         var convError: NSError?
         converter.convert(to: outBuf, error: &convError) { _, status in
-            if supplied { status.pointee = .noDataNow; return nil }
-            supplied = true
+            guard let next = pending.take() else {
+                status.pointee = .noDataNow
+                return nil
+            }
             status.pointee = .haveData
-            return inBuf
+            return next
         }
         if let convError { throw convError }
         let n = Int(outBuf.frameLength)
@@ -60,4 +67,13 @@ enum EchoCancellingProcessor {
         }
         try file.write(from: buf)
     }
+}
+
+/// Livre un buffer une seule fois au bloc d'entrée du convertisseur, puis nil (= fin de l'entrée).
+/// `@unchecked` assumé : `AVAudioConverter.convert` appelle le bloc de façon synchrone sur le fil
+/// appelant, donc il n'y a pas d'accès concurrent malgré la signature `@Sendable`.
+private final class PendingBuffer: @unchecked Sendable {
+    private var buffer: AVAudioPCMBuffer?
+    init(_ buffer: AVAudioPCMBuffer) { self.buffer = buffer }
+    func take() -> AVAudioPCMBuffer? { defer { buffer = nil }; return buffer }
 }

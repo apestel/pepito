@@ -188,10 +188,14 @@ public final class CoreAudioTapSystemAudioRecorder: SystemAudioRecording, @unche
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var value: CFString = "" as CFString
-        var size = UInt32(MemoryLayout<CFString>.size)
+        // CoreAudio écrit une référence CFString **possédée par l'appelant** (+1). La recevoir dans
+        // un `CFString` laisse le compilateur croire qu'il gère un objet Swift déjà retenu ; passer
+        // par `Unmanaged` dit explicitement qui libère.
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
         try check(AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value))
-        return value as String
+        guard let value else { throw CaptureError.audioHardware(kAudioHardwareBadObjectError) }
+        return value.takeRetainedValue() as String
     }
 
     private func tapStreamFormat(_ tap: AudioObjectID) throws -> AudioStreamBasicDescription {
