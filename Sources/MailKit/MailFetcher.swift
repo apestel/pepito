@@ -18,21 +18,28 @@ import Foundation
 public actor MailFetcher {
     public init() {}
 
-    /// Messages reçus depuis `days` jours, regroupés par conversation (plus récente en tête).
+    /// Messages reçus sur la période demandée, regroupés par conversation (plus récente en tête).
     /// - Parameters:
+    ///   - period: jours calendaires inclusifs (de minuit du premier jour à minuit du lendemain
+    ///     du dernier).
     ///   - limit: nombre maximum de messages remontés (garde-fou sur les très grosses boîtes).
     ///   - bodyChars: longueur du corps texte conservée par message après décodage MIME.
-    public func fetch(days: Int, limit: Int = 300, bodyChars: Int = 2000) throws -> MailFetchResult {
+    public func fetch(period: MailPeriod, limit: Int = 300, bodyChars: Int = 2000) throws -> MailFetchResult {
         // On récupère assez de source brute pour décoder ~bodyChars de texte visible, tout en
         // bornant le transfert des grosses pièces jointes inline (plafond : ~40 Ko/message).
         let sourceCap = max(bodyChars * 20, 40000)
-        guard let script = NSAppleScript(source: Self.script(days: days, limit: limit, sourceCap: sourceCap)) else {
+
+        // AppleScript renvoie les dates en delta vs son propre `nowd` : capturer l'origine AVANT
+        // l'exécution, sinon tout est décalé de la durée du script (~1 min 30). Les bornes de la
+        // période sont exprimées dans le même repère.
+        let now = Date()
+        let bounds = period.bounds()
+        guard let script = NSAppleScript(source: Self.script(
+            bounds: bounds, now: now, limit: limit, sourceCap: sourceCap))
+        else {
             throw MailError.appleScript("script illisible")
         }
 
-        // AppleScript renvoie les dates en delta vs son propre `nowd` : capturer l'origine AVANT
-        // l'exécution, sinon tout est décalé de la durée du script (~1 min 30).
-        let now = Date()
         var errInfo: NSDictionary?
         let result = script.executeAndReturnError(&errInfo)
         if let e = errInfo {
@@ -41,7 +48,7 @@ public actor MailFetcher {
                 "\(e["NSAppleScriptErrorNumber"] ?? "?") — \(e["NSAppleScriptErrorMessage"] ?? e)")
         }
 
-        // Parsing du descripteur : listes à positions fixes, voir `script(days:limit:sourceCap:)`.
+        // Parsing du descripteur : listes à positions fixes, voir `script(bounds:now:limit:sourceCap:)`.
         var collected: [MailMessage] = []
         for i in 0..<result.numberOfItems {
             guard let item = result.atIndex(i + 1) else { continue }
@@ -60,9 +67,13 @@ public actor MailFetcher {
                 body: String(Self.decodeMIME(s(11)).prefix(bodyChars))))
         }
 
+        // Garde-fou : on ne fait confiance qu'aux dates qu'on a nous-mêmes reconstruites, pas au
+        // filtre `whose` de Mail (fuseaux, messages sans date reçue).
+        let inPeriod = collected.filter { $0.date >= bounds.start && $0.date < bounds.endExclusive }
+
         return MailFetchResult(
-            generatedAt: now, days: days, messageCount: collected.count,
-            threads: Self.group(collected))
+            generatedAt: now, period: period, messageCount: inPeriod.count,
+            threads: Self.group(inPeriod))
     }
 
     // MARK: - Regroupement par conversation
@@ -243,8 +254,14 @@ public actor MailFetcher {
 
     /// Retourne une liste de listes à positions fixes :
     /// `{message id, subject, sender, to, cc, Δdate, mailbox, read, flagged, nb PJ, source}`.
-    static func script(days: Int, limit: Int, sourceCap: Int) -> String {
-        """
+    ///
+    /// Les bornes sont passées en **secondes signées relatives à `now`** : le script les rejoue sur
+    /// son propre `current date` (arithmétique de dates AppleScript, pas de littéral date — leur
+    /// écriture dépend de la locale du système).
+    static func script(bounds: (start: Date, endExclusive: Date), now: Date, limit: Int, sourceCap: Int) -> String {
+        let from = Int(bounds.start.timeIntervalSince(now).rounded())
+        let to = Int(bounds.endExclusive.timeIntervalSince(now).rounded())
+        return """
         on joinList(theList)
             set AppleScript's text item delimiters to ", "
             set s to theList as text
@@ -255,8 +272,9 @@ public actor MailFetcher {
         with timeout of 600 seconds
             tell application "Mail"
                 set nowd to current date
-                set cutoff to nowd - (\(days) * 86400)
-                set msgs to (messages of inbox whose date received >= cutoff)
+                set startD to nowd + (\(from))
+                set endD to nowd + (\(to))
+                set msgs to (messages of inbox whose date received >= startD and date received < endD)
                 set n to count of msgs
                 if n > \(limit) then set n to \(limit)
                 set out to {}

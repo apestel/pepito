@@ -33,12 +33,8 @@ public enum PathBuilder {
     public static func summaryPath(meetingFolder: String) -> String { "\(meetingFolder)/summary.md" }
     public static func actionPlanPath(meetingFolder: String) -> String { "\(meetingFolder)/action-plan.md" }
 
-    /// Revue de boîte mail du jour : `mails/revue-AAAA-MM-JJ.md` (une par jour, réécrite si on
-    /// relance le triage).
-    public static func mailReportPath(day: String) -> String { "mails/revue-\(day).md" }
-
-    public static func mailReportPath(date: Date, calendar: Calendar = .current) -> String {
-        let c = calendar.dateComponents([.year, .month, .day], from: date)
-        return mailReportPath(day: String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0))
-    }
+    /// Revue de boîte mail, nommée par la **période couverte** : `mails/revue-AAAA-MM-JJ.md` pour
+    /// un jour, `mails/revue-AAAA-MM-JJ_AAAA-MM-JJ.md` pour un intervalle. Une par période,
+    /// réécrite si on relance le triage sur la même.
+    public static func mailReportPath(periodKey: String) -> String { "mails/revue-\(periodKey).md" }
 }

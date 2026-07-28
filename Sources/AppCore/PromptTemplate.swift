@@ -1,4 +1,5 @@
 import Foundation
+import MailKit
 
 /// Contexte d'interpolation d'un prompt agentic.
 public struct PromptContext: Sendable {
@@ -69,7 +70,7 @@ public enum PromptTemplate {
     - Séries identiques (relances répétées, partages en masse) : ne classe que le représentant le
       plus pertinent, laisse les autres non listés.
     - Convertis toute échéance en date absolue AAAA-MM-JJ (« avant vendredi », « le 30 juillet »…) ;
-      sinon laisse la chaîne vide. Aujourd'hui : {{date}} (période : {{days}} derniers jours).
+      sinon laisse la chaîne vide. Aujourd'hui : {{date}} (mails triés : {{period}}).
 
     Actions déjà ouvertes dans Pépito (n'en recrée pas de doublon) : {{open_actions}}
     """
@@ -85,14 +86,18 @@ public enum PromptTemplate {
             .replacingOccurrences(of: "{{open_actions}}", with: context.openActions)
     }
 
-    /// Rendu du prompt de triage mail. Variables propres : `{{date}}`, `{{days}}`,
+    /// Rendu du prompt de triage mail. Variables propres : `{{date}}`, `{{period}}`, `{{days}}`,
     /// `{{open_actions}}` (le digest part en message utilisateur, pas dans le prompt système).
+    ///
+    /// `{{days}}` reste substitué bien que le prompt par défaut ne l'utilise plus : les prompts
+    /// déjà enregistrés dans `settings.json` le contiennent, et rien dans l'UI ne les réinitialise.
     public static func renderMail(
-        _ template: String, date: String, days: Int, openActions: String
+        _ template: String, date: String, period: MailPeriod, openActions: String
     ) -> String {
         template
             .replacingOccurrences(of: "{{date}}", with: date)
-            .replacingOccurrences(of: "{{days}}", with: String(days))
+            .replacingOccurrences(of: "{{period}}", with: period.label)
+            .replacingOccurrences(of: "{{days}}", with: String(period.dayCount))
             .replacingOccurrences(of: "{{open_actions}}", with: openActions)
     }
 }

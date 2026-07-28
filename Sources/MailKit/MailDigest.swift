@@ -12,7 +12,7 @@ public enum MailDigest {
     public static func text(_ r: MailFetchResult) -> String {
         var out = [
             "# \(r.messageCount) messages, \(r.threads.count) conversations — généré "
-            + timestamp.string(from: r.generatedAt) + " — jours=\(r.days)",
+            + timestamp.string(from: r.generatedAt) + " — période=\(r.period.key)",
             "# index #N = clé du triage (ne pas retrier). ⚑ = flaggé.",
             "# dest N = nombre de destinataires To+Cc du dernier mail (1 = adressé perso, N élevé = diffusion).",
             "",

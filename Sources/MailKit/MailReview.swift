@@ -4,7 +4,8 @@ import Foundation
 /// figé au moment de la revue (le sujet ou l'expéditeur peuvent changer dans Mail par la suite),
 /// seule l'action liée reste vivante via `actionID`.
 public struct MailReviewEntry: Sendable, Equatable, Identifiable {
-    /// Jour de la revue, `AAAA-MM-JJ` (clé d'historique).
+    /// Clé de la période couverte — `AAAA-MM-JJ` ou `AAAA-MM-JJ_AAAA-MM-JJ` (cf. `MailPeriod.key`).
+    /// C'est la clé d'historique : retrier la même période remplace la revue.
     public let reviewDate: String
     /// Index `#N` du digest — l'ordre d'origine, jamais réattribué.
     public let index: Int
@@ -55,6 +56,7 @@ public struct MailReviewEntry: Sendable, Equatable, Identifiable {
 /// Ligne d'historique : ce qu'il faut pour afficher une revue dans la barre latérale sans charger
 /// toutes ses conversations.
 public struct MailReviewSummary: Sendable, Equatable, Identifiable {
+    /// Clé de la période couverte (cf. `MailReviewEntry.reviewDate`).
     public let date: String
     public let messageCount: Int
     public let threadCount: Int

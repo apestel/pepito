@@ -12,7 +12,7 @@ private func mail(id: String, subject: String, sender: String = "a@b.c") -> Mail
 }
 
 private let fetched = MailFetchResult(
-    generatedAt: .init(timeIntervalSince1970: 1_000), days: 7, messageCount: 3,
+    generatedAt: .init(timeIntervalSince1970: 1_000), period: MailPeriod(key: "2026-07-20_2026-07-26")!, messageCount: 3,
     threads: [
         MailThread(subject: "Renouvellement Splunk", messages: [mail(id: "m1@x", subject: "Renouvellement Splunk")]),
         MailThread(subject: "Facture 042", messages: [mail(id: "m2@x", subject: "Facture 042")]),
@@ -37,8 +37,8 @@ private let triageJSON = #"""
     let today = try #require(MeetingPipeline.parseDate("2026-07-26"))
     let result = try await pipeline.process(result: fetched, today: today)
 
-    // Revue écrite dans le Vault, sous mails/revue-<date>.md.
-    #expect(result.reportPath == "mails/revue-2026-07-26.md")
+    // Revue écrite dans le Vault sous la **période couverte**, pas sous le jour du triage.
+    #expect(result.reportPath == "mails/revue-2026-07-20_2026-07-26.md")
     let report = try vault.read(relativePath: result.reportPath, type: .summary)
     #expect(report.markdown.contains("🔴 Action immédiate"))
     #expect(report.markdown.contains("Renouvellement Splunk"))
@@ -55,7 +55,7 @@ private let triageJSON = #"""
 
     // Historique : toutes les conversations sont figées, et #1 pointe l'action créée.
     #expect(result.entries.count == fetched.threads.count)
-    #expect(result.entries.first?.reviewDate == "2026-07-26")
+    #expect(result.entries.first?.reviewDate == "2026-07-20_2026-07-26")   // clé = période, pas jour de run
     #expect(result.entries.first?.actionID == action.id)
     #expect(result.entries.first?.bucket == .immediate)
     #expect(result.entries.last?.bucket == .info)              // #3 classée « info », donc pas archivée

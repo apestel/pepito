@@ -34,11 +34,10 @@ public enum MailReport {
         func link(_ i: Int) -> String { "[\(thread(i).subject)](\(thread(i).last.url))" }
         func who(_ i: Int) -> String { senderName(thread(i).last.sender) }
 
-        let period = triage.period.isEmpty ? "\(result.days) derniers jours" : triage.period
-        let date = triage.date.isEmpty ? dayFormatter.string(from: today) : triage.date
         var lines = [
-            "# Revue des mails — \(period)", "",
-            "_\(result.messageCount) messages, \(threads.count) conversations analysées le \(date)._", "",
+            "# Revue des mails — \(result.period.label)", "",
+            "_\(result.messageCount) messages, \(threads.count) conversations analysées le "
+            + "\(dayFormatter.string(from: today))._", "",
         ]
 
         var ordered: [(item: MailTriageItem, thread: MailThread)] = []

@@ -9,6 +9,65 @@ import Foundation
     #expect(MailKit.moduleName == "MailKit")
 }
 
+// MARK: - Période triée
+
+/// Un calendrier figé (grégorien, lundi = premier jour, UTC) pour que les périodes usuelles ne
+/// dépendent ni du fuseau ni de la locale de la machine de test.
+private let cal: Calendar = {
+    var c = Calendar(identifier: .gregorian)
+    c.timeZone = TimeZone(identifier: "UTC")!
+    c.firstWeekday = 2
+    return c
+}()
+
+/// Mercredi 22 juillet 2026, 12 h UTC.
+private let wed = Date(timeIntervalSince1970: 1_784_721_600)
+
+@Test func periodKeyRoundTripsAndLabels() {
+    let oneDay = MailPeriod(start: wed, end: wed, calendar: cal)
+    #expect(oneDay.key == "2026-07-22")
+    #expect(oneDay.dayCount == 1)
+    #expect(MailPeriod(key: oneDay.key) == oneDay)
+
+    let range = MailPeriod.lastDays(7, now: wed, calendar: cal)
+    #expect(range.key == "2026-07-16_2026-07-22")
+    #expect(range.dayCount == 7)
+    #expect(MailPeriod(key: range.key) == range)
+
+    // Les revues d'avant la notion de période sont stockées sous leur seul jour de lancement.
+    #expect(MailPeriod(key: "2026-07-26")?.end == "2026-07-26")
+    #expect(MailPeriod(key: "n'importe quoi") == nil)
+
+    // Libellés : un seul jour vs intervalle (le mois commun est factorisé par Foundation).
+    #expect(!oneDay.label.contains("–") && oneDay.label != oneDay.key)
+    #expect(range.label != range.key && range.label.contains("16"))
+}
+
+@Test func usualPeriodsLandOnCalendarDays() {
+    #expect(MailPeriod.today(wed, calendar: cal).key == "2026-07-22")
+    #expect(MailPeriod.yesterday(wed, calendar: cal).key == "2026-07-21")
+    #expect(MailPeriod.thisWeek(wed, calendar: cal).key == "2026-07-20_2026-07-22")   // lundi → aujourd'hui
+    #expect(MailPeriod.lastWeek(wed, calendar: cal).key == "2026-07-13_2026-07-19")   // lundi → dimanche, complète
+}
+
+@Test func periodBoundsCoverWholeCalendarDays() {
+    // Le bug d'origine : « aujourd'hui » extrayait les 24 dernières heures, pas depuis minuit.
+    let bounds = MailPeriod.today(wed, calendar: cal).bounds(calendar: cal)
+    #expect(bounds.start == cal.startOfDay(for: wed))
+    #expect(bounds.endExclusive == cal.date(byAdding: .day, value: 1, to: bounds.start))
+    #expect(bounds.endExclusive.timeIntervalSince(bounds.start) == 86_400)
+}
+
+@Test func fetchScriptFiltersOnBothBounds() {
+    // Le seul endroit où la période devient un vrai filtre : les deux bornes du `whose`.
+    let period = MailPeriod(key: "2026-07-20_2026-07-22")!
+    let bounds = period.bounds(calendar: cal)
+    let script = MailFetcher.script(bounds: bounds, now: bounds.endExclusive, limit: 300, sourceCap: 40000)
+    #expect(script.contains("date received >= startD and date received < endD"))
+    #expect(script.contains("set startD to nowd + (-259200)"))     // 3 jours avant la borne haute
+    #expect(script.contains("set endD to nowd + (0)"))
+}
+
 // MARK: - Normalisation des sujets
 
 @Test func normalizeSubjectStripsReplyPrefixes() {
@@ -75,7 +134,7 @@ import Foundation
 
 @Test func digestNumbersThreadsInOrder() {
     let result = MailFetchResult(
-        generatedAt: .init(timeIntervalSince1970: 0), days: 7, messageCount: 2,
+        generatedAt: .init(timeIntervalSince1970: 0), period: MailPeriod(key: "2026-07-20_2026-07-26")!, messageCount: 2,
         threads: MailFetcher.group([
             message(id: "1", subject: "Devis", date: .init(timeIntervalSince1970: 300), flagged: true),
             message(id: "2", subject: "Facture", date: .init(timeIntervalSince1970: 100), body: "un  corps\ncoupé"),
@@ -93,7 +152,7 @@ import Foundation
 @Test func digestTruncatesPreview() {
     let long = String(repeating: "a", count: 500)
     let result = MailFetchResult(
-        generatedAt: .init(timeIntervalSince1970: 0), days: 1, messageCount: 1,
+        generatedAt: .init(timeIntervalSince1970: 0), period: MailPeriod(key: "2026-07-26")!, messageCount: 1,
         threads: MailFetcher.group([message(id: "1", subject: "Long", date: .now, body: long)]))
     #expect(MailDigest.text(result).contains("« \(String(repeating: "a", count: 300)) »"))
 }
@@ -141,9 +200,10 @@ import Foundation
 }
 
 @Test func triageDecodingToleratesMissingFields() {
+    // « period » n'est plus au contrat : un modèle qui l'envoie quand même ne doit rien casser.
     let json = #"{"period":"semaine","items":[{"id":1,"bucket":"info"},{"bucket":"info"}]}"#
     let triage = try! JSONDecoder().decode(MailTriage.self, from: Data(json.utf8))
-    #expect(triage.date.isEmpty && triage.items.count == 2)
+    #expect(triage.items.count == 2)
     #expect(triage.items[0].summary.isEmpty)
     #expect(triage.items[1].id == -1)                               // id manquant → item ignoré au rendu
     #expect(MailReport.render(result: sampleResult, triage: triage).ignoredIDs == [-1])
@@ -183,7 +243,7 @@ import Foundation
 @Test func archiveGroupsCountBySenderMostFrequentFirst() {
     // Trois relances du même expéditeur + une conversation isolée ; seule #1 est classée.
     let result = MailFetchResult(
-        generatedAt: .now, days: 7, messageCount: 4,
+        generatedAt: .now, period: MailPeriod(key: "2026-07-20_2026-07-26")!, messageCount: 4,
         threads: (1...4).map { i in
             MailThread(subject: "Sujet \(i)", messages: [
                 message(id: "\(i)", subject: "Sujet \(i)", date: .now,
@@ -199,7 +259,7 @@ import Foundation
 @Test func settledEntriesJoinTheArchive() {
     // #1 classée « immédiate » mais traitée (l'UI passe le prédicat), #2 non classée.
     let result = MailFetchResult(
-        generatedAt: .now, days: 7, messageCount: 2,
+        generatedAt: .now, period: MailPeriod(key: "2026-07-20_2026-07-26")!, messageCount: 2,
         threads: (1...2).map { i in
             MailThread(subject: "Sujet \(i)", messages: [
                 message(id: "\(i)", subject: "Sujet \(i)", date: .now, sender: "Client \(i) <c\(i)@x.fr>")])
@@ -232,7 +292,7 @@ private func message(
 
 /// 4 conversations : #1 Devis, #2 Facture (2 mails, flaggée), #3 Newsletter, #4 Promo.
 private let sampleResult = MailFetchResult(
-    generatedAt: .init(timeIntervalSince1970: 0), days: 7, messageCount: 5,
+    generatedAt: .init(timeIntervalSince1970: 0), period: MailPeriod(key: "2026-07-20_2026-07-26")!, messageCount: 5,
     threads: [
         MailThread(subject: "Devis", messages: [
             message(id: "1", subject: "Devis", date: .now, sender: "\"Rémi Dupont\" <r@x.fr>")]),

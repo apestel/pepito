@@ -35,8 +35,6 @@ public struct Settings: Sendable, Codable, Equatable {
     public var systemCaptureBundleID: String
     /// Prompt de triage de la boîte mail (voir `PromptTemplate.defaultMailPrompt`).
     public var mailPrompt: String
-    /// Période par défaut du triage, en jours.
-    public var mailDays: Int
     /// Garde-fou : nombre maximum de messages extraits par triage.
     public var mailLimit: Int
 
@@ -50,7 +48,6 @@ public struct Settings: Sendable, Codable, Equatable {
         echoCancellation: EchoCancellationMode = .offlineReference,
         systemCaptureBundleID: String = "",
         mailPrompt: String = PromptTemplate.defaultMailPrompt,
-        mailDays: Int = 7,
         mailLimit: Int = 300
     ) {
         self.aiBaseURL = aiBaseURL
@@ -62,7 +59,6 @@ public struct Settings: Sendable, Codable, Equatable {
         self.echoCancellation = echoCancellation
         self.systemCaptureBundleID = systemCaptureBundleID
         self.mailPrompt = mailPrompt
-        self.mailDays = mailDays
         self.mailLimit = mailLimit
     }
 
@@ -80,7 +76,6 @@ public struct Settings: Sendable, Codable, Equatable {
         echoCancellation = try c.decodeIfPresent(EchoCancellationMode.self, forKey: .echoCancellation) ?? d.echoCancellation
         systemCaptureBundleID = try c.decodeIfPresent(String.self, forKey: .systemCaptureBundleID) ?? d.systemCaptureBundleID
         mailPrompt = try c.decodeIfPresent(String.self, forKey: .mailPrompt) ?? d.mailPrompt
-        mailDays = try c.decodeIfPresent(Int.self, forKey: .mailDays) ?? d.mailDays
         mailLimit = try c.decodeIfPresent(Int.self, forKey: .mailLimit) ?? d.mailLimit
     }
 

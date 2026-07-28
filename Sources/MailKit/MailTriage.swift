@@ -63,23 +63,20 @@ public struct MailTriageItem: Sendable, Equatable, Decodable {
 }
 
 /// Réponse de triage complète. Les conversations absentes d'`items` sont archivées (⚪).
+///
+/// Le modèle ne décrit plus la période ni la date : l'app les connaît (`MailFetchResult.period`),
+/// et les lui faire réécrire ne produisait que des libellés approximatifs.
 public struct MailTriage: Sendable, Equatable, Decodable {
-    public let period: String
-    public let date: String
     public let items: [MailTriageItem]
 
-    public init(period: String = "", date: String = "", items: [MailTriageItem]) {
-        self.period = period
-        self.date = date
+    public init(items: [MailTriageItem]) {
         self.items = items
     }
 
-    enum CodingKeys: String, CodingKey { case period, date, items }
+    enum CodingKeys: String, CodingKey { case items }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        period = try c.decodeIfPresent(String.self, forKey: .period) ?? ""
-        date = try c.decodeIfPresent(String.self, forKey: .date) ?? ""
         items = try c.decodeIfPresent([MailTriageItem].self, forKey: .items) ?? []
     }
 }

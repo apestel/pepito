@@ -737,23 +737,24 @@ public final class MeetingCoordinator {
 
     private let mailFetcher = MailFetcher()
 
-    /// Trie la boîte mail des `days` derniers jours : extraction Mail.app → digest → IA → revue
-    /// Markdown dans le Vault + actions dans le même suivi que celles des réunions.
+    /// Trie la boîte mail sur la période demandée (jours calendaires) : extraction Mail.app →
+    /// digest → IA → revue Markdown dans le Vault + actions dans le même suivi que celles des
+    /// réunions. La revue est identifiée par sa période : retrier la même la remplace, trier une
+    /// autre période crée une nouvelle entrée d'historique.
     /// L'extraction est longue (~1 min sur une grosse boîte) mais tourne hors du MainActor.
-    public func triageMail(days: Int? = nil) async {
+    public func triageMail(period: MailPeriod) async {
         guard !isTriagingMail else { return }
-        let period = days ?? settings.mailDays
         guard let provider = provider(), settings.isConfigured else {
             mailStatus = CoordinatorError.notConfigured.errorDescription
             return
         }
 
         isTriagingMail = true
-        mailStatus = "Lecture de Mail (\(period) j) — ça peut prendre une minute…"
+        mailStatus = "Lecture de Mail (\(period.label)) — ça peut prendre une minute…"
         defer { isTriagingMail = false }
 
         do {
-            let fetched = try await mailFetcher.fetch(days: period, limit: settings.mailLimit)
+            let fetched = try await mailFetcher.fetch(period: period, limit: settings.mailLimit)
             // Aucun contenu de mail dans les journaux : uniquement des compteurs.
             AppLog.shared.log("Mails extraits : \(fetched.messageCount) messages, \(fetched.threads.count) conversations")
             guard !fetched.threads.isEmpty else {
@@ -783,7 +784,7 @@ public final class MeetingCoordinator {
         }
     }
 
-    /// Conversations d'une revue (lues à la sélection, pas à chaque rendu).
+    /// Conversations d'une revue, par clé de période (lues à la sélection, pas à chaque rendu).
     public func mailReview(date: String) -> [MailReviewEntry] {
         database.mailReview(date: date)
     }
@@ -796,7 +797,7 @@ public final class MeetingCoordinator {
     }
 
     /// Chemin du document Markdown correspondant dans le Vault (affiché en légende).
-    public func mailReportPath(date: String) -> String { PathBuilder.mailReportPath(day: date) }
+    public func mailReportPath(date: String) -> String { PathBuilder.mailReportPath(periodKey: date) }
 
     /// Exporte les actions ouvertes vers Rappels (Phase E). Met à jour `statusMessage` avec le bilan.
     public func exportOpenActionsToReminders() async {

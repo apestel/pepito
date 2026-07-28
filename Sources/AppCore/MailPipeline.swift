@@ -42,7 +42,7 @@ public struct MailPipeline {
         let systemPrompt = PromptTemplate.renderMail(
             prompt,
             date: MeetingPipeline.dateFormatter.string(from: today),
-            days: result.days,
+            period: result.period,
             openActions: openActions
         ) + "\n\n" + Self.jsonContract
 
@@ -54,13 +54,14 @@ public struct MailPipeline {
         let triage = try Self.parse(reply.content)
         let rendered = MailReport.render(result: result, triage: triage, today: today)
 
-        let path = PathBuilder.mailReportPath(date: today)
+        let path = PathBuilder.mailReportPath(periodKey: result.period.key)
         try vault.write(VaultDocument(
             relativePath: path,
             type: .summary,
             frontMatter: [
                 "title": "Revue des mails",
-                "date": MeetingPipeline.dateFormatter.string(from: today),
+                "date": result.period.end,
+                "period": result.period.key,
                 "tags": "mail",
             ],
             markdown: rendered.markdown))
@@ -86,7 +87,7 @@ public struct MailPipeline {
             actions: actions,
             entries: MailReview.entries(
                 result: result, triage: triage,
-                date: MeetingPipeline.dateFormatter.string(from: today), actionIDs: actionIDs),
+                date: result.period.key, actionIDs: actionIDs),
             threadCount: result.threads.count,
             messageCount: result.messageCount,
             ignoredIDs: rendered.ignoredIDs)
@@ -120,8 +121,6 @@ public struct MailPipeline {
     static let jsonContract = """
     Réponds UNIQUEMENT avec un objet JSON valide de cette forme, sans aucun texte autour :
     {
-      "period": "<libellé de la période, ex. semaine du 13 au 19 juillet 2026>",
-      "date": "<AAAA-MM-JJ du jour>",
       "items": [
         {"id": <index #N du digest>, "bucket": "immediate|week|info",
          "importance": "Critique|Haute|Normale|Faible",

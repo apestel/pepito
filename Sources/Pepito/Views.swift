@@ -180,15 +180,9 @@ struct MainView: View {
                     HStack {
                         Text("Mails")
                         Spacer()
-                        Menu {
-                            Button("Aujourd'hui") { Task { await app.triageMail(days: 1) } }
-                            Button("7 derniers jours") { Task { await app.triageMail(days: 7) } }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                        .disabled(app.isTriagingMail)
-                        .help("Trier mes mails : lit Mail, classe les conversations et en extrait vos actions.")
+                        MailTriageMenu(app: app, label: Label("Trier", systemImage: "arrow.clockwise"))
+                            .labelStyle(.iconOnly)
+                            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                     }
                 }
                 Section("Réunions") {
@@ -242,7 +236,56 @@ struct MeetingRow: View {
     }
 }
 
-/// Ligne d'historique d'une revue de mails : date courte + ce qui reste urgent.
+/// Lancement d'un triage : périodes usuelles + sélecteur de dates. Une seule définition pour les
+/// deux points d'entrée (en-tête de la barre latérale et bouton « Retrier » d'une revue).
+struct MailTriageMenu<L: View>: View {
+    @Bindable var app: MeetingCoordinator
+    let label: L
+
+    @State private var showCustom = false
+    @State private var from = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
+    @State private var to = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
+
+    var body: some View {
+        Menu {
+            Button("Aujourd'hui") { triage(.today()) }
+            Button("Hier") { triage(.yesterday()) }
+            Button("7 derniers jours") { triage(.lastDays(7)) }
+            Button("Cette semaine") { triage(.thisWeek()) }
+            Button("La semaine dernière") { triage(.lastWeek()) }
+            Divider()
+            Button("Période personnalisée…") { showCustom = true }
+        } label: {
+            label
+        }
+        .disabled(app.isTriagingMail)
+        .help("Trier mes mails : lit Mail sur la période choisie, classe les conversations et en extrait vos actions.")
+        .popover(isPresented: $showCustom, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 12) {
+                DatePicker("Du", selection: $from, in: ...Date(), displayedComponents: .date)
+                // `max` obligatoire : une plage dont la borne haute passe sous la basse fait crasher
+                // `DatePicker` (le sélecteur « Du » garde l'heure du jour, pas seulement la date).
+                DatePicker("Au", selection: $to, in: from...max(from, Date()), displayedComponents: .date)
+                HStack {
+                    Spacer()
+                    Button("Trier") {
+                        showCustom = false
+                        triage(MailPeriod(start: from, end: to))
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(16)
+            .frame(width: 280)
+        }
+    }
+
+    private func triage(_ period: MailPeriod) {
+        Task { await app.triageMail(period: period) }
+    }
+}
+
+/// Ligne d'historique d'une revue de mails : période courte + ce qui reste urgent.
 struct MailReviewRow: View {
     let review: MailReviewSummary
 
@@ -263,19 +306,11 @@ struct MailReviewRow: View {
         }
     }
 
-    /// « 2026-07-26 » → « 26 juil. » ; on garde la chaîne brute si elle n'est pas au format attendu.
-    static func label(_ date: String) -> String {
-        guard let parsed = isoDay.date(from: date) else { return date }
-        return parsed.formatted(.dateTime.day().month(.abbreviated))
+    /// Clé de période → libellé lisible : « 26 juil. » ou « 21–27 juil. ». On garde la chaîne
+    /// brute si elle n'est pas au format attendu.
+    static func label(_ periodKey: String) -> String {
+        MailPeriod(key: periodKey)?.label ?? periodKey
     }
-
-    private static let isoDay: DateFormatter = {
-        let f = DateFormatter()
-        f.calendar = Calendar(identifier: .gregorian)
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM-dd"
-        return f
-    }()
 }
 
 struct StatusBadge: View {
@@ -482,7 +517,7 @@ struct MailReviewView: View {
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .confirmationDialog("Supprimer la revue du \(MailReviewRow.label(review.date)) ?",
+        .confirmationDialog("Supprimer la revue \(MailReviewRow.label(review.date)) ?",
                             isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Supprimer la revue", role: .destructive) { app.deleteMailReview(date: review.date) }
             Button("Annuler", role: .cancel) {}
@@ -500,16 +535,10 @@ struct MailReviewView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Revue du \(MailReviewRow.label(review.date))").font(.largeTitle.bold())
+                Text("Revue des mails — \(MailReviewRow.label(review.date))").font(.largeTitle.bold())
                 Spacer()
-                Menu {
-                    Button("Aujourd'hui") { Task { await app.triageMail(days: 1) } }
-                    Button("7 derniers jours") { Task { await app.triageMail(days: 7) } }
-                } label: {
-                    Label("Retrier", systemImage: "arrow.clockwise")
-                }
-                .fixedSize()
-                .disabled(app.isTriagingMail)
+                MailTriageMenu(app: app, label: Label("Retrier", systemImage: "arrow.clockwise"))
+                    .fixedSize()
                 Button(role: .destructive) { confirmDelete = true } label: {
                     Label("Supprimer", systemImage: "trash")
                 }
@@ -1222,9 +1251,6 @@ struct AdminView: View {
             }
 
             Section("Triage des mails") {
-                Stepper(value: $app.settings.mailDays, in: 1...30) {
-                    InfoLabel("Période par défaut : \(app.settings.mailDays) jour(s)", "Ancienneté maximale des mails analysés. 1 = revue quotidienne, 7 = revue hebdomadaire.")
-                }
                 Stepper(value: $app.settings.mailLimit, in: 50...1000, step: 50) {
                     InfoLabel("Limite : \(app.settings.mailLimit) messages", "Garde-fou sur les grosses boîtes : au-delà, l'extraction devient très lente (elle passe par Mail, comptez ~1 min pour 7 jours).")
                 }
@@ -1232,7 +1258,7 @@ struct AdminView: View {
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 100)
                     .help("Instructions données à l'IA pour classer les conversations : critères d'importance, échéances, quoi ignorer. L'app se charge du rendu de la revue et de la création des actions.")
-                Text("Variables: {{date}}, {{days}}, {{open_actions}}")
+                Text("Variables: {{date}}, {{period}}, {{days}}, {{open_actions}}")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("Nécessite l'autorisation Automatisation → Mail au premier triage. Seul un résumé compact (expéditeur, date, 300 caractères d'aperçu) est envoyé à l'IA — jamais les mails complets.")
                     .font(.caption).foregroundStyle(.secondary)
