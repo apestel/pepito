@@ -62,14 +62,18 @@ public final class MeetingCoordinator {
     /// (`stopLive()`), écrite dans le Vault.
     static let liveDisplaySegmentCap = 200
 
-    /// Texte live affichable : les deux sources fusionnées **par ordre chronologique** et
-    /// labellisées (Moi / Interlocuteurs). Une ligne par prise de parole (chaque segment finalisé
-    /// = une pause), l'étiquette n'étant répétée qu'au changement de locuteur.
+    /// Transcript live affichable, **une entrée par prise de parole** : les deux sources fusionnées
+    /// par ordre chronologique et labellisées (Moi / Interlocuteurs), chaque segment finalisé
+    /// valant une pause, l'étiquette n'étant répétée qu'au changement de locuteur.
     ///
-    /// Plafonné aux `liveDisplaySegmentCap` dernières prises de parole : SwiftUI re-typographie
-    /// intégralement le `Text` à chaque passe de rendu, donc une réunion longue (3 h ≈ 250 000
-    /// caractères) sature le thread principal — CoreText + layout à 60 Hz sur tout le transcript.
-    public var liveTranscriptText: String {
+    /// Renvoie des lignes séparées, pas un bloc : la vue les empile dans un `LazyVStack` pour que
+    /// SwiftUI ne mesure et ne dessine que les lignes visibles. Un `Text` unique obligeait CoreText
+    /// à réassembler tout le transcript (shaping + crénage) à chaque passe de rendu — trois fois
+    /// par frame (contraintes AppKit, layout SwiftUI, dessin), soit ~80 % de CPU en réunion.
+    ///
+    /// Plafonné par ailleurs aux `liveDisplaySegmentCap` dernières prises de parole, ce qui borne
+    /// aussi `BleedFilter` (O(n·m) sur tout l'historique à chaque hypothèse volatile).
+    public var liveTranscriptLines: [String] {
         let cap = Self.liveDisplaySegmentCap
         let recentMic = Array(liveMicSegments.suffix(cap))
         let recentSystem = Array(liveSystemSegments.suffix(cap))
@@ -90,8 +94,12 @@ public final class MeetingCoordinator {
         // Fragments encore en cours de parole (non finalisés), affichés en fin.
         append("Moi", liveMicVolatile)
         append("Interlocuteurs", liveSystemVolatile)
-        return lines.joined(separator: "\n")
+        return lines
     }
+
+    /// Même contenu que `liveTranscriptLines`, en un seul bloc. À ne pas rendre dans un `Text`
+    /// unique (voir ci-dessus) : sert au copier-coller et aux tests.
+    public var liveTranscriptText: String { liveTranscriptLines.joined(separator: "\n") }
 
     private let settingsStore: SettingsStore
     private let database: Database

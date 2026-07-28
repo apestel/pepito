@@ -876,10 +876,10 @@ struct LiveTranscriptView: View {
     var body: some View {
         // Calculé une seule fois par rendu (propriété coûteuse : bleed-filter + tri de tout
         // l'historique). Trois lectures = trois recalculs à chaque hypothèse volatile.
-        let live = app.liveTranscriptText
-        let display = live.isEmpty
-            ? (app.isRecording ? "En attente de parole…" : "Démarre un enregistrement pour voir le transcript en direct.")
-            : live
+        let lines = app.liveTranscriptLines
+        let placeholder = app.isRecording
+            ? "En attente de parole…"
+            : "Démarre un enregistrement pour voir le transcript en direct."
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: app.isRecording ? "waveform" : "waveform.slash")
@@ -905,17 +905,29 @@ struct LiveTranscriptView: View {
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    Text(display)
-                        .font(.body)
-                        .foregroundStyle(live.isEmpty ? .secondary : .primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                    Color.clear.frame(height: 1).id("bottom")
+                    // Une Text par prise de parole dans un LazyVStack : SwiftUI ne mesure et ne
+                    // dessine que les lignes visibles. Un Text unique contenant tout le transcript
+                    // forçait CoreText à le réassembler entièrement à chaque passe de rendu.
+                    // Contrepartie assumée : la sélection est ligne par ligne, plus continue.
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        if lines.isEmpty {
+                            Text(placeholder).foregroundStyle(.secondary)
+                        }
+                        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                        Color.clear.frame(height: 1).id("bottom")
+                    }
+                    .font(.body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 // Sans animation : le transcript change plusieurs fois par seconde (hypothèses
                 // volatiles), et des scrolls animés qui se chevauchent maintiennent un rendu à
-                // 60 Hz en permanence pendant toute la réunion.
-                .onChange(of: live) { _, _ in
+                // 60 Hz en permanence pendant toute la réunion. On observe la dernière ligne
+                // (l'hypothèse en cours) plutôt que tout le tableau : comparaison en O(1).
+                .onChange(of: lines.last) { _, _ in
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }

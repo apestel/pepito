@@ -63,8 +63,18 @@ mail content never lands in the logs.
     untouched: `liveTranscriptText` is display-only, `stopLive()` still returns every segment.
   - Auto-scroll no longer animates — `live` changes several times a second, so overlapping
     animated scrolls kept a 60 Hz render loop alive for the whole meeting.
-- `symbolEffect(.variableColor)` on the recording indicator still animates at 60 Hz while
-  recording; left as-is (deliberate UX), cheap now that the `Text` is bounded.
+  - That got it to 33 %, not to zero: re-profiling showed CoreText **shaping** (`OTL::GPOS`,
+    kerning, variable-font axes) still burning ~80 % across three passes per frame — AppKit
+    constraint update, SwiftUI layout, and draw — because `ScrollView { Text(…) }` has to measure
+    the whole string to size its content. The transcript is now a `LazyVStack` of one `Text` per
+    turn (`MeetingCoordinator.liveTranscriptLines`), so only visible lines are measured and drawn.
+    Text selection becomes per-line instead of continuous — accepted.
+- `symbolEffect(.variableColor)` on the recording indicator was profiled at **0.1 %**, not the
+  suspected hot spot. Left alone.
+- The spectrogram costs ~17 % — but only while the menu-bar popover is open (140 columns × 64
+  bands × 2 sources = 17 920 `ctx.fill` per frame at 30 Hz). Its `ponytail:` note already records
+  the fix (one `CGImage` instead of per-cell fills); not worth it until the popover is a real
+  steady state.
 
 ### Added — profiling
 
