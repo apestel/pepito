@@ -189,6 +189,7 @@ swift test               # tests unitaires (swift-testing) de tous les Kits
 ./build-app.sh           # assemble .build/Pepito.app (bundle requis pour fenêtres/réglages/TCC)
 open .build/Pepito.app   # lance l'app menu-bar
 ./profile.py [secondes]  # profile l'app EN COURS D'EXÉCUTION (défaut 10 s) : points chauds + flamegraph
+./profile.py <fichier.txt>  # réanalyse un brut déjà capturé, sans réechantillonner
 ```
 
 Important : lancer le **bundle** `.app` (via `build-app.sh`), pas le binaire SPM nu

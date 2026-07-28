@@ -11,14 +11,14 @@ commande. `sample` donne le même arbre d'appels en texte, sans droits particuli
 """
 import colorsys, html, os, random, re, subprocess, sys, time
 
-SECONDS = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+SECONDS = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 10
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # ponytail: liste en dur des symboles « thread qui ne travaille pas ». sample(1) échantillonne *tous*
 # les threads, endormis compris — sans ce filtre un pool inactif pèse autant que le thread principal
 # saturé et le classement ment. À compléter si un thread manifestement idle remonte en tête.
 # `start_wqthread` en feuille = thread de workqueue attrapé pendant sa création, pile incomplète :
-# ce n'est pas du travail, et sans lui un pic de création de threads (réponses XPC) passe en tête.
+# ce n'est pas du travail. Marginal en pratique (quelques échantillons par thread).
 BLOCKED = (
     '__workq_kernreturn', 'mach_msg2_trap', '__psynch_cvwait', 'kevent', 'kevent_id',
     'semaphore_wait_trap', 'semaphore_timedwait_trap', 'semaphore_wait_signal_trap',
@@ -40,10 +40,19 @@ def find_pid():
 
 
 def parse(path):
-    """sample(1) → {(thread, frame, …): self_samples}. La profondeur vient de l'indentation."""
-    stacks, stack = {}, []
+    """sample(1) → {(thread, frame, …): self_samples}. La profondeur vient de l'indentation.
+
+    Ne lit QUE la section « Call graph: ». Les sections suivantes (« Total number in stack »,
+    « Sort by top of stack », « Binary Images ») ont le même format indentation + compteur +
+    symbole et sont donc indistinguables d'une frame : les avaler rattache des centaines de
+    lignes de résumé au dernier en-tête de thread lu, qui explose alors en tête du classement.
+    """
+    stacks, stack, in_graph = {}, [], False
     for raw in open(path, errors='replace'):
-        if raw.startswith('Binary Images'):
+        if not in_graph:
+            in_graph = raw.startswith('Call graph:')
+            continue
+        if raw[:1] not in (' ', '\n', ''):      # fin du graphe : section suivante, colonne 0
             break
         m = LINE.match(raw.rstrip('\n'))
         if not m or not raw.startswith('    '):
@@ -114,18 +123,25 @@ def svg(root, path, subtitle):
 
 
 def main():
-    pid = find_pid()
-    # top -l 2 : la 1re passe est une moyenne depuis le lancement, la 2e une mesure instantanée.
-    top = subprocess.run(['top', '-l', '2', '-pid', str(pid), '-stats', 'cpu'],
-                         capture_output=True, text=True).stdout.split()
-    cpu = top[-1] if top else '?'
-    print(f"PID {pid} — {cpu} % CPU instantané — échantillonnage {SECONDS} s…")
+    # Argument = fichier .txt existant → réanalyse sans réechantillonner (utile pour comparer
+    # deux mesures, ou relire une ancienne après correction de l'analyse).
+    if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]):
+        raw = sys.argv[1]
+        stamp = os.path.basename(raw).removeprefix('profile-').removesuffix('.txt')
+        print(f"Réanalyse de {raw} (pas de nouvel échantillonnage)")
+    else:
+        pid = find_pid()
+        # top -l 2 : la 1re passe est une moyenne depuis le lancement, la 2e est instantanée.
+        top = subprocess.run(['top', '-l', '2', '-pid', str(pid), '-stats', 'cpu'],
+                             capture_output=True, text=True).stdout.split()
+        cpu = top[-1] if top else '?'
+        print(f"PID {pid} — {cpu} % CPU instantané — échantillonnage {SECONDS} s…")
 
-    os.makedirs(f'{ROOT}/.build', exist_ok=True)
-    stamp = time.strftime('%Y%m%d-%H%M%S')
-    raw = f'{ROOT}/.build/profile-{stamp}.txt'
-    subprocess.run(['sample', str(pid), str(SECONDS), '1', '-f', raw],
-                   check=True, stdout=subprocess.DEVNULL)
+        os.makedirs(f'{ROOT}/.build', exist_ok=True)
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        raw = f'{ROOT}/.build/profile-{stamp}.txt'
+        subprocess.run(['sample', str(pid), str(SECONDS), '1', '-f', raw],
+                       check=True, stdout=subprocess.DEVNULL)
 
     stacks = parse(raw)
 
