@@ -177,3 +177,32 @@ final class MockCapturer: AudioCapturing {
     #expect(coordinator.actions.count == 1)
     #expect(coordinator.meetings.first?.tags == ["budget"])
 }
+
+// Le texte live affiché est plafonné : sans ça, une réunion longue fait re-typographier tout le
+// transcript à SwiftUI à chaque frame (100 % CPU sur le thread principal).
+@MainActor
+@Test func liveTranscriptTextIsCappedForDisplay() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appending(path: "pepito-cap-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let coordinator = MeetingCoordinator(
+        settingsStore: SettingsStore(fileURL: root.appending(path: "settings.json")),
+        database: Database(path: root.appending(path: "pepito.db")),
+        tokenStore: InMemoryTokenStore(),
+        recordingsRoot: root.appending(path: "recordings"),
+        capture: MockCapturer()
+    )
+
+    let cap = MeetingCoordinator.liveDisplaySegmentCap
+    let total = cap + 50
+    coordinator.liveMicSegments = (0..<total).map {
+        TranscriptSegment(start: Double($0), end: Double($0) + 0.5, text: "phrase \($0)")
+    }
+
+    let lines = coordinator.liveTranscriptText.split(separator: "\n")
+    #expect(lines.count == cap)
+    // On garde la *fin* : c'est ce que l'utilisateur regarde (auto-scroll en bas).
+    #expect(lines.last?.hasSuffix("phrase \(total - 1)") == true)
+    #expect(!coordinator.liveTranscriptText.contains("phrase 0\n"))
+}

@@ -188,11 +188,36 @@ swift build              # build de tous les modules + app
 swift test               # tests unitaires (swift-testing) de tous les Kits
 ./build-app.sh           # assemble .build/Pepito.app (bundle requis pour fenêtres/réglages/TCC)
 open .build/Pepito.app   # lance l'app menu-bar
+./profile.py [secondes]  # profile l'app EN COURS D'EXÉCUTION (défaut 10 s) : points chauds + flamegraph
 ```
 
 Important : lancer le **bundle** `.app` (via `build-app.sh`), pas le binaire SPM nu
 (`.build/debug/Pepito`) — sans bundle Info.plist, la gestion des fenêtres, l'activation, les
 Réglages et les permissions macOS (TCC) ne fonctionnent pas correctement.
+
+### Profilage CPU (`./profile.py`)
+
+Enveloppe `sample(1)` — pas Instruments, dont le `.trace` est illisible en ligne de commande.
+L'app doit tourner ; le script trouve le PID seul. Sorties dans `.build/` (gitignoré) : le `.svg`
+(flamegraph, ouvrir dans un navigateur) et le `.txt` brut. **Le classement imprimé sur stdout suffit
+à décider** — pas besoin d'ouvrir le SVG.
+
+Comment le lire :
+- **`% CPU instantané`** en tête : le seul chiffre qui compte pour un avant/après.
+- **Colonnes `actif` / `total`** : `sample` échantillonne *tous* les threads, endormis compris.
+  `total` ne mesure donc rien ; `actif` exclut les symboles de blocage connus (liste `BLOCKED`,
+  à compléter si un thread manifestement idle remonte en tête). Le flamegraph ne couvre que le
+  thread le plus actif.
+- **« Self time (feuilles) »** : où le CPU part vraiment — c'est la table à lire en premier.
+- **« Inclusif, code Pepito »** : typiquement < 1 %. Dans une app SwiftUI, le coût est presque
+  toujours dans le framework, sur les données qu'on lui donne — chercher *quelle vue* alimente le
+  symbole système chaud, pas une boucle à optimiser dans le code Swift.
+
+Précédent utile (juillet 2026) : 100 % CPU au repos, dont ~80 % en encodage de glyphes CoreText
+(`TASCIIEncoder::Encode`) — un `Text` unique contenant tout le transcript live d'une réunion de 3 h,
+re-mesuré et re-typographié à chaque frame. Corrigé en plafonnant le texte **affiché**
+(`MeetingCoordinator.liveDisplaySegmentCap`) et en retirant l'animation du scroll auto. Réflexe :
+dans cette app, un pic CPU vient d'abord d'une vue qui grossit sans borne, pas d'un algorithme.
 
 Prérequis : macOS 26+, Xcode 26+, Apple Silicon. Layout : monorepo SwiftPM, un module par Kit
 sous `Sources/`, tests sous `Tests/`, app exécutable `Sources/Pepito`.
@@ -201,7 +226,7 @@ sous `Sources/`, tests sous `Tests/`, app exécutable `Sources/Pepito`.
 
 ## 11. État & feuille de route (résumé)
 
-- **Statut actuel** : Phases 0 → 7 implémentées + triage mail natif (77 tests verts, `swift build`/`swift test` OK,
+- **Statut actuel** : Phases 0 → 7 implémentées + triage mail natif (82 tests verts, `swift build`/`swift test` OK,
   l'app se lance). Logique testée : Vault, client IA OpenAI-compatible (requête/réponse/SSE/chunking),
   boucle agentic + outils + `MeetingPipeline`, hiérarchie & suivi des actions, réglages/Keychain,
   `MeetingStore`, et l'orchestration end-to-end `MeetingCoordinator` (capture→transcription→analyse).

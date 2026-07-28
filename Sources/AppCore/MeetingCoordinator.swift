@@ -57,13 +57,25 @@ public final class MeetingCoordinator {
     /// la plus récente en fin. Alimente la visualisation live.
     public var micSpectrogram: [[Float]] = []
     public var systemSpectrogram: [[Float]] = []
+    /// Nombre de prises de parole conservées par source dans le texte live **affiché**.
+    /// Purement cosmétique : le transcript de référence reste l'intégralité des segments finalisés
+    /// (`stopLive()`), écrite dans le Vault.
+    static let liveDisplaySegmentCap = 200
+
     /// Texte live affichable : les deux sources fusionnées **par ordre chronologique** et
     /// labellisées (Moi / Interlocuteurs). Une ligne par prise de parole (chaque segment finalisé
     /// = une pause), l'étiquette n'étant répétée qu'au changement de locuteur.
+    ///
+    /// Plafonné aux `liveDisplaySegmentCap` dernières prises de parole : SwiftUI re-typographie
+    /// intégralement le `Text` à chaque passe de rendu, donc une réunion longue (3 h ≈ 250 000
+    /// caractères) sature le thread principal — CoreText + layout à 60 Hz sur tout le transcript.
     public var liveTranscriptText: String {
+        let cap = Self.liveDisplaySegmentCap
+        let recentMic = Array(liveMicSegments.suffix(cap))
+        let recentSystem = Array(liveSystemSegments.suffix(cap))
         // Retire le bleed micro (doublons de la sortie HP) aussi en direct.
-        let cleanMic = BleedFilter.micWithoutBleed(mic: liveMicSegments, system: liveSystemSegments)
-        let labeled = cleanMic.map { ("Moi", $0) } + liveSystemSegments.map { ("Interlocuteurs", $0) }
+        let cleanMic = BleedFilter.micWithoutBleed(mic: recentMic, system: recentSystem)
+        let labeled = cleanMic.map { ("Moi", $0) } + recentSystem.map { ("Interlocuteurs", $0) }
         let sorted = labeled.sorted { $0.1.start < $1.1.start }
 
         var lines: [String] = []

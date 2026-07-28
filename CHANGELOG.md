@@ -50,6 +50,28 @@ Read-only by design: Pépito never modifies, flags or sends mail. Only the diges
 300-character preview per conversation) reaches the AI endpoint — never full message bodies — and
 mail content never lands in the logs.
 
+### Fixed — 100 % CPU during long meetings
+
+- The live transcript view pinned the main thread at **100 % CPU** for the whole duration of a
+  recording. `LiveTranscriptView` renders the entire live transcript as a single `Text`, which
+  SwiftUI re-measures and CoreText fully re-typesets on every render pass — ~250 000 characters
+  for a 3 h meeting. Profiling (`sample`) put ~80 % of the CPU in CoreText glyph encoding
+  (`TASCIIEncoder::Encode`) and only 0.6 % in Pepito's own code.
+  - The **displayed** live text is now capped to the last `MeetingCoordinator
+    .liveDisplaySegmentCap` (200) turns per source. This also bounds `BleedFilter`, which was
+    O(n·m) over the full history on every volatile speech hypothesis. The reference transcript is
+    untouched: `liveTranscriptText` is display-only, `stopLive()` still returns every segment.
+  - Auto-scroll no longer animates — `live` changes several times a second, so overlapping
+    animated scrolls kept a 60 Hz render loop alive for the whole meeting.
+- `symbolEffect(.variableColor)` on the recording indicator still animates at 60 Hz while
+  recording; left as-is (deliberate UX), cheap now that the `Text` is bounded.
+
+### Added — profiling
+
+- **`./profile.py [seconds]`** — profiles the running app via `sample(1)`: prints instantaneous
+  CPU, a per-thread active/total breakdown, self-time and Pepito-only inclusive tables, and writes
+  a flamegraph SVG to `.build/`. No dependency, no Instruments. Reading guide in `CLAUDE.md` §10.
+
 ### Changed — UX pass
 
 - Mail review: the whole section title toggles its `DisclosureGroup` (macOS only reacted to the

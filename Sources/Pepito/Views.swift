@@ -912,8 +912,11 @@ struct LiveTranscriptView: View {
                         .textSelection(.enabled)
                     Color.clear.frame(height: 1).id("bottom")
                 }
+                // Sans animation : le transcript change plusieurs fois par seconde (hypothèses
+                // volatiles), et des scrolls animés qui se chevauchent maintiennent un rendu à
+                // 60 Hz en permanence pendant toute la réunion.
                 .onChange(of: live) { _, _ in
-                    withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
 
