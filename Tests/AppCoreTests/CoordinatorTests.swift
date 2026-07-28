@@ -206,3 +206,43 @@ final class MockCapturer: AudioCapturing {
     #expect(lines.last?.hasSuffix("phrase \(total - 1)") == true)
     #expect(!coordinator.liveTranscriptText.contains("phrase 0\n"))
 }
+
+// Le spectrogramme ne se calcule que pendant un enregistrement ET quand une vue l'affiche : le
+// popover de la barre de menu est son seul consommateur.
+@MainActor
+@Test func levelSamplingRunsOnlyWhenRecordingAndVisible() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appending(path: "pepito-levels-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let coordinator = MeetingCoordinator(
+        settingsStore: SettingsStore(fileURL: root.appending(path: "settings.json")),
+        database: Database(path: root.appending(path: "pepito.db")),
+        tokenStore: InMemoryTokenStore(),
+        recordingsRoot: root.appending(path: "recordings"),
+        capture: MockCapturer(),
+        transcriberFactory: { MockTranscriber(segments: []) },
+        liveTranscriberFactory: { _ in MockLiveTranscriber() }
+    )
+
+    // Popover ouvert hors enregistrement : rien à échantillonner.
+    coordinator.levelsVisible = true
+    #expect(coordinator.isSamplingLevels == false)
+
+    // Enregistrement + popover ouvert : la boucle tourne.
+    await coordinator.startRecording()
+    #expect(coordinator.isSamplingLevels)
+
+    // Popover fermé pendant l'enregistrement : la boucle s'arrête et l'historique est purgé.
+    coordinator.levelsVisible = false
+    #expect(coordinator.isSamplingLevels == false)
+    #expect(coordinator.micSpectrogram.isEmpty)
+
+    // Réouvert : elle repart.
+    coordinator.levelsVisible = true
+    #expect(coordinator.isSamplingLevels)
+
+    // Arrêt de l'enregistrement, popover toujours ouvert : plus rien ne tourne.
+    await coordinator.stopRecording()
+    #expect(coordinator.isSamplingLevels == false)
+}

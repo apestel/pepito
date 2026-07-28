@@ -76,6 +76,14 @@ and Metal — the inherent cost of a 30 Hz spectrogram plus a live-updating tran
     Text selection becomes per-line instead of continuous — accepted.
 - `symbolEffect(.variableColor)` on the recording indicator was profiled at **0.1 %**, not the
   suspected hot spot. Left alone.
+- The spectrogram is no longer computed at all when nothing displays it. The rolling FFT ran at
+  30 Hz for the whole recording, but `RecordingLevelsView` only ever lives in the menu-bar
+  popover; closed, both the FFT and its 30 observable mutations per second (each invalidating a
+  SwiftUI graph) were pure waste. `MeetingCoordinator.levelsVisible`, toggled by the popover's
+  `onAppear`/`onDisappear`, now gates the sampling loop together with `isRecording`. The rolling
+  history is cleared on hide, so reopening rebuilds it over ~4.6 s rather than showing stale
+  columns. `SpectrumMeter.push` still runs on the audio thread — it is a copy into a sliding
+  window, not a computation, and it keeps the first frame after reopening meaningful.
 - The spectrogram profiled at ~17 % while the menu-bar popover is open: 140 columns × 64 bands ×
   2 sources = 17 920 `ctx.fill` per frame at 30 Hz, each allocating a `Path`, a `CGRect` and a
   `Color`. `RecordingLevelsView` now composites both sources into one RGBA `CGImage` (one pixel

@@ -53,6 +53,10 @@ struct MenuBarContent: View {
         }
         .padding(16)
         .frame(width: 300)
+        // Le spectrogramme n'est calculé que tant que ce popover est à l'écran : c'est sa seule
+        // vue. Fermé, la FFT et ses 30 mutations observables par seconde ne servaient à rien.
+        .onAppear { app.levelsVisible = true }
+        .onDisappear { app.levelsVisible = false }
     }
 }
 

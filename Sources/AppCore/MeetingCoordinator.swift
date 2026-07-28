@@ -255,7 +255,7 @@ public final class MeetingCoordinator {
         preBrief = relevantOpenActions(for: meeting)   // « la dernière fois, il restait à… »
         isRecording = true
         persist(meeting)   // résilience : la réunion existe en base dès le départ
-        startLevelSampling()
+        syncLevelSampling()   // ne démarre la FFT que si une vue affiche les niveaux
 
         let activeSources = capture.startedSources
         if activeSources.contains(.system) {
@@ -542,10 +542,41 @@ public final class MeetingCoordinator {
         return live
     }
 
+    /// Vrai tant qu'une vue affiche les niveaux (le popover de la barre de menu, seul consommateur
+    /// de `micSpectrogram`/`systemSpectrogram`). La vue le bascule via `onAppear`/`onDisappear`.
+    ///
+    /// Sans consommateur à l'écran, ni la FFT ni les mutations observables à 30 Hz ne servent —
+    /// et ces dernières coûtent plus cher que la FFT, puisque chacune invalide un graphe SwiftUI.
+    public var levelsVisible = false {
+        didSet { syncLevelSampling() }
+    }
+
+    /// Vrai quand la boucle d'échantillonnage tourne. Les niveaux ne sont calculés que pendant un
+    /// enregistrement **et** quand une vue les affiche.
+    var isSamplingLevels: Bool { levelTask != nil }
+
+    /// Démarre ou arrête la boucle selon l'état courant. Appelée à chaque changement des deux
+    /// conditions (`isRecording`, `levelsVisible`) — idempotente.
+    private func syncLevelSampling() {
+        switch (isRecording && levelsVisible, levelTask) {
+        case (true, nil): startLevelSampling()
+        case (false, .some(let task)):
+            task.cancel()
+            levelTask = nil
+            micSpectrogram = []
+            systemSpectrogram = []
+        default: break
+        }
+    }
+
     /// Échantillonne le spectre à ~30 Hz et pousse une colonne dans les spectrogrammes roulants.
     /// La FFT tourne sur un thread de fond (`Task.detached`) pour ne pas partager le MainActor avec
     /// l'arrivée des résultats de transcription : sinon un burst de transcript fige le spectre (et
     /// vice-versa). On ne repasse sur le MainActor que pour publier les colonnes calculées.
+    ///
+    /// `SpectrumMeter.push` continue de tourner sur le thread audio même quand rien n'affiche :
+    /// c'est une copie dans une fenêtre glissante, pas un calcul, et elle garantit un spectre
+    /// immédiat à l'ouverture du popover plutôt que 4,6 s de colonnes vides.
     private func startLevelSampling() {
         micSpectrogram = []
         systemSpectrogram = []
