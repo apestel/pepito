@@ -52,6 +52,11 @@ mail content never lands in the logs.
 
 ### Fixed — 100 % CPU during long meetings
 
+Net result, measured on a `release` build with the live transcript and the menu-bar popover both
+open: **~100 % → 26 % CPU**, main thread 98 % → 21 % busy (78 % of its samples now parked in
+`mach_msg2_trap`). No remaining hot spot above 1 %; what is left is AttributeGraph, `objc_msgSend`
+and Metal — the inherent cost of a 30 Hz spectrogram plus a live-updating transcript.
+
 - The live transcript view pinned the main thread at **100 % CPU** for the whole duration of a
   recording. `LiveTranscriptView` renders the entire live transcript as a single `Text`, which
   SwiftUI re-measures and CoreText fully re-typesets on every render pass — ~250 000 characters
