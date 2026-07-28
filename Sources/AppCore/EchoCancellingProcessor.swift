@@ -53,18 +53,24 @@ enum EchoCancellingProcessor {
         return Array(UnsafeBufferPointer(start: p, count: n))
     }
 
+    /// Écrit le micro nettoyé. **Échoue** s'il n'y a rien à écrire : un micro illisible ou vide
+    /// remonte ici sous forme de tableau vide (`readMono16k` puis `cancel` le propagent), et écrire
+    /// un CAF vide ferait « réussir » l'AEC — le pipeline transcrirait alors du silence et tout le
+    /// transcript micro de la réunion serait perdu sans un mot. En échouant, on laisse
+    /// `transcribeWithOfflineAEC` retomber sur la transcription normale.
     private static func writeMono16k(_ samples: [Float], to url: URL) throws {
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                         sampleRate: sampleRate, channels: 1, interleaved: false) else {
+        guard !samples.isEmpty,
+              let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                         sampleRate: sampleRate, channels: 1, interleaved: false),
+              let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else {
             throw CocoaError(.fileWriteUnknown)
         }
-        let file = try AVAudioFile(forWriting: url, settings: format.settings)
-        guard !samples.isEmpty,
-              let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else { return }
         buf.frameLength = AVAudioFrameCount(samples.count)
         samples.withUnsafeBufferPointer { src in
             buf.floatChannelData![0].update(from: src.baseAddress!, count: samples.count)
         }
+        // Fichier créé en dernier : un échec ne laisse pas un CAF vide derrière lui.
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
         try file.write(from: buf)
     }
 }

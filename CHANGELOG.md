@@ -50,6 +50,21 @@ Read-only by design: Pépito never modifies, flags or sends mail. Only the diges
 300-character preview per conversation) reaches the AI endpoint — never full message bodies — and
 mail content never lands in the logs.
 
+### Fixed — offline AEC could silently discard the microphone transcript
+
+- `EchoCancellingProcessor.process` reported success while writing an **empty** file whenever the
+  microphone could not be read: `readMono16k` returns `[]`, `EchoCanceller.cancel` passes it
+  through, and `writeMono16k` created the output file *before* its `guard`, then returned early.
+  `transcribeWithOfflineAEC` only falls back on a thrown error, so it went on to transcribe
+  silence — losing a whole meeting's microphone transcript without a single log line, on a path
+  CLAUDE.md §7 explicitly guards ("ne jamais perdre un enregistrement"). `writeMono16k` now throws
+  when there is nothing to write and creates the file last, so no empty CAF is left behind and the
+  caller falls back to normal transcription.
+- Found while adding the coverage this path never had. Three tests now pin it: resampling
+  (48 kHz stereo → mono 16 kHz), end-to-end echo removal through files (>7 dB, same threshold as
+  the array-level test — catches wiring bugs the algorithm's unit tests cannot), and the
+  fail-don't-write-silence contract. All three verified to fail when the code they cover is broken.
+
 ### Fixed — Swift 6 concurrency warnings
 
 - `EchoCancellingProcessor.readMono16k` fed its whole buffer to `AVAudioConverter` through a
