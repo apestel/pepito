@@ -46,6 +46,14 @@ struct MenuBarContent: View {
             Button { open("main") } label: {
                 Label("Fenêtre principale (direct, réunions & suivi)", systemImage: "sidebar.left")
             }
+            // Capture au fil de l'eau : une tâche qui ne sort ni d'une réunion ni d'un mail.
+            Button {
+                app.selection = .dashboard
+                app.beginQuickCapture()
+                open("main")
+            } label: {
+                Label("Nouvelle action…", systemImage: "plus.circle")
+            }
 
             Divider()
             Button { open("settings") } label: { Label("Réglages…", systemImage: "gearshape") }
@@ -137,20 +145,14 @@ struct RecordingLevelsView: View {
 struct MainView: View {
     @Bindable var app: MeetingCoordinator
 
-    /// Sélection de la barre latérale : le transcript live (pendant un enregistrement), le suivi
-    /// transverse, ou une réunion. Le dashboard doit rester atteignable ; il n'est donc plus caché
-    /// derrière « aucune sélection ».
-    enum SidebarItem: Hashable {
-        case live
-        case dashboard
-        case mailReview(String)
-        case meeting(Meeting.ID)
-    }
-    @State private var selection: SidebarItem? = .dashboard
-
+    /// Sélection portée par le coordinateur (`SidebarItem`) : le suivi doit pouvoir renvoyer vers la
+    /// réunion d'origine d'une action. Le dashboard reste atteignable, il n'est pas caché derrière
+    /// « aucune sélection ».
     var body: some View {
         NavigationSplitView {
-            List(selection: $selection) {
+            List(selection: Binding(
+                get: { app.selection as SidebarItem? },
+                set: { app.selection = $0 ?? .dashboard })) {
                 // « En direct » en première position, seulement pendant un enregistrement.
                 if app.isRecording {
                     Label("En direct", systemImage: "waveform")
@@ -189,19 +191,34 @@ struct MainView: View {
                     if app.meetings.isEmpty {
                         Text("Aucune réunion").foregroundStyle(.secondary)
                     }
-                    ForEach(app.meetings) { meeting in
-                        MeetingRow(meeting: meeting).tag(SidebarItem.meeting(meeting.id))
+                    // Les occurrences d'une réunion récurrente se replient sous leur titre ; une
+                    // réunion isolée reste une ligne simple.
+                    ForEach(app.meetingSeries) { series in
+                        if series.isRecurring {
+                            DisclosureGroup {
+                                ForEach(series.meetings) { meeting in
+                                    MeetingRow(meeting: meeting, showsTitle: false)
+                                        .tag(SidebarItem.meeting(meeting.id))
+                                }
+                            } label: {
+                                Label("\(series.title) (\(series.meetings.count))",
+                                      systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                                .lineLimit(1)
+                            }
+                        } else if let meeting = series.meetings.first {
+                            MeetingRow(meeting: meeting).tag(SidebarItem.meeting(meeting.id))
+                        }
                     }
                 }
             }
             .navigationTitle("Pépito")
             .frame(minWidth: 240)
         } detail: {
-            if selection == .live {
+            if app.selection == .live {
                 LiveTranscriptView(app: app)
-            } else if case .meeting(let id) = selection, let meeting = app.meetings.first(where: { $0.id == id }) {
+            } else if case .meeting(let id) = app.selection, let meeting = app.meetings.first(where: { $0.id == id }) {
                 MeetingDetailView(app: app, meeting: meeting)
-            } else if case .mailReview(let date) = selection,
+            } else if case .mailReview(let date) = app.selection,
                       let review = app.mailReviews.first(where: { $0.date == date }) {
                 MailReviewView(app: app, review: review)
             } else {
@@ -211,24 +228,28 @@ struct MainView: View {
         // Bascule sur « En direct » au démarrage d'un enregistrement, revient au suivi à l'arrêt
         // (l'onglet live disparaît alors de la barre latérale).
         .onChange(of: app.isRecording) { _, recording in
-            selection = recording ? .live : .dashboard
+            app.selection = recording ? .live : .dashboard
         }
         // Un triage qui aboutit amène directement sa revue à l'écran.
         .onChange(of: app.lastMailReviewDate) { _, date in
-            if let date { selection = .mailReview(date) }
+            if let date { app.selection = .mailReview(date) }
         }
     }
 }
 
 struct MeetingRow: View {
     let meeting: Meeting
+    /// Dans un groupe de récurrentes, le titre est déjà porté par l'en-tête : seule la date distingue
+    /// les occurrences.
+    var showsTitle = true
 
     var body: some View {
         HStack {
             VStack(alignment: .leading) {
-                Text(meeting.title).font(.body)
+                if showsTitle { Text(meeting.title).font(.body) }
                 Text(meeting.startedAt, format: .dateTime.day().month().hour().minute())
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(showsTitle ? .caption : .body)
+                    .foregroundStyle(showsTitle ? .secondary : .primary)
             }
             Spacer()
             StatusBadge(status: meeting.status)
@@ -353,9 +374,12 @@ struct MeetingDetailView: View {
     @State private var editingSummary = false
     @State private var summaryDraft = ""
 
+    @State private var creating: ActionItem?
+
     private var meetingActions: [ActionItem] {
         app.actions.filter { $0.meetingID == meeting.id }
     }
+
 
     var body: some View {
         ScrollView {
@@ -379,6 +403,9 @@ struct MeetingDetailView: View {
                     values: meeting.tags, suggestions: app.allTags
                 ) { updated in
                     var m = meeting; m.tags = updated; app.updateMeeting(m)
+                }
+                ProjectPicker(app: app, selection: meeting.projectID) { id in
+                    var m = meeting; m.projectID = id; app.updateMeeting(m)
                 }
                 Label(meeting.folderPath.isEmpty ? "(non rangée)" : meeting.folderPath, systemImage: "folder")
                     .font(.callout).foregroundStyle(.secondary)
@@ -438,14 +465,27 @@ struct MeetingDetailView: View {
                     }
                 }
 
-                GroupBox("Plans d'action (\(meetingActions.count))") {
+                GroupBox {
                     if meetingActions.isEmpty {
                         Text("Aucune action extraite").foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        ForEach(meetingActions) { action in
-                            ActionRow(app: app, action: action)
+                        // Sous-tâches indentées sous leur parent (le pipeline renseigne parentID).
+                        ForEach(ActionHierarchy.flattened(in: meetingActions)) { node in
+                            ActionRow(app: app, action: node.item, showsMeeting: false, depth: node.depth)
                         }
+                    }
+                } label: {
+                    HStack {
+                        Text("Plans d'action (\(meetingActions.count))")
+                        Spacer()
+                        Button {
+                            creating = ActionItem(
+                                meetingID: meeting.id, projectID: meeting.projectID, title: "")
+                        } label: {
+                            Label("Ajouter", systemImage: "plus")
+                        }
+                        .buttonStyle(.borderless)
                     }
                 }
             }
@@ -457,6 +497,9 @@ struct MeetingDetailView: View {
             Button("Annuler", role: .cancel) {}
         } message: {
             Text("Les notes, le résumé, le plan d'action et l'audio de cette réunion seront définitivement supprimés du Vault et du disque.")
+        }
+        .sheet(item: $creating) { draft in
+            ActionEditor(action: draft, projects: app.activeProjects) { app.addAction($0) }
         }
         // Relit aussi quand le statut change (le résumé n'existe qu'après l'analyse).
         .task(id: [meeting.id.uuidString, meeting.status.rawValue]) {
@@ -476,7 +519,6 @@ struct MailReviewView: View {
     let review: MailReviewSummary
     /// Conversations lues à la sélection (requête base), pas à chaque rendu.
     @State private var entries: [MailReviewEntry] = []
-    @State private var expanded: Set<String> = [MailBucket.immediate.rawValue]
     @State private var confirmDelete = false
 
     var body: some View {
@@ -487,30 +529,26 @@ struct MailReviewView: View {
                 ForEach(MailBucket.allCases, id: \.self) { bucket in
                     let items = entries.filter { $0.bucket == bucket && !isSettled($0) }
                     if !items.isEmpty {
-                        DisclosureGroup(isExpanded: expansion(bucket.rawValue)) {
-                            VStack(spacing: 8) {
-                                ForEach(items) { MailEntryCard(app: app, entry: $0) }
-                            }
-                            .padding(.top, 6)
-                        } label: {
-                            sectionLabel(bucket.rawValue, "\(bucket.title) (\(items.count))")
+                        Collapsible(
+                            title: "\(bucket.title) (\(items.count))",
+                            initiallyExpanded: bucket == .immediate, spacing: 8
+                        ) {
+                            ForEach(items) { MailEntryCard(app: app, entry: $0) }
                         }
                     }
                 }
 
                 let archived = MailReview.archiveGroups(entries) { $0.bucket == nil || isSettled($0) }
                 if !archived.isEmpty {
-                    DisclosureGroup(isExpanded: expansion("archive")) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(archived, id: \.sender) { group in
-                                Text(group.count > 1 ? "\(group.sender) ×\(group.count)" : group.sender)
-                                    .font(.callout).foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
+                    Collapsible(
+                        title: "⚪ Peut être archivé (\(archived.reduce(0) { $0 + $1.count }))",
+                        initiallyExpanded: false
+                    ) {
+                        ForEach(archived, id: \.sender) { group in
+                            Text(group.count > 1 ? "\(group.sender) ×\(group.count)" : group.sender)
+                                .font(.callout).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .padding(.top, 6)
-                    } label: {
-                        sectionLabel("archive", "⚪ Peut être archivé (\(archived.reduce(0) { $0 + $1.count }))")
                     }
                 }
             }
@@ -556,23 +594,6 @@ struct MailReviewView: View {
             Label(app.mailReportPath(date: review.date), systemImage: "doc.text")
                 .font(.caption).foregroundStyle(.secondary)
         }
-    }
-
-    private func expansion(_ key: String) -> Binding<Bool> {
-        Binding(
-            get: { expanded.contains(key) },
-            set: { isOpen in
-                if isOpen { expanded.insert(key) } else { expanded.remove(key) }
-            })
-    }
-
-    /// Titre de section pliable : sur macOS, seul le chevron d'un `DisclosureGroup` réagit au clic,
-    /// or c'est le titre qu'on vise. Toute la ligne devient cliquable.
-    private func sectionLabel(_ key: String, _ text: String) -> some View {
-        Text(text).font(.headline)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(.rect)
-            .onTapGesture { expansion(key).wrappedValue.toggle() }
     }
 
     /// Conversation traitée : son action est terminée ou abandonnée. Elle quitte sa section
@@ -765,11 +786,18 @@ struct ActionRow: View {
     let action: ActionItem
     /// Bouton « ouvrir le mail d'origine ». Masqué dans une carte de revue, qui porte déjà le sien.
     var showsSource = true
+    /// Contexte déjà porté par l'écran : la fiche d'une réunion n'a pas à rappeler son propre titre,
+    /// ni une section de projet à répéter le sien.
+    var showsMeeting = true
+    var showsProject = true
+    /// Indentation des sous-tâches (`parentID`) dans la fiche d'une réunion.
+    var depth = 0
     @State private var editing = false
 
     var body: some View {
         HStack(alignment: .top) {
-            // Menu de statut : éditer le suivi (persisté via updateActionStatus).
+            if depth > 0 { Spacer().frame(width: CGFloat(depth) * 16) }
+            // Menu de statut et d'implication : tout le suivi éditable en un clic.
             Menu {
                 ForEach(ActionStatus.allCases, id: \.self) { status in
                     Button {
@@ -778,6 +806,17 @@ struct ActionRow: View {
                         Label(Self.label(status), systemImage: Self.symbol(status))
                     }
                 }
+                Divider()
+                Section("Implication") {
+                    ForEach(Involvement.allCases, id: \.self) { level in
+                        Button { app.setInvolvement(action.id, to: level) } label: {
+                            Label(level.label, systemImage: Self.symbol(level))
+                        }
+                    }
+                    // Retire la surcharge : l'action se reclasse d'après son responsable.
+                    Button("Automatique") { app.setInvolvement(action.id, to: nil) }
+                        .disabled(action.involvement == nil)
+                }
             } label: {
                 Image(systemName: Self.symbol(action.status))
                     .foregroundStyle(action.status == .done ? .green : .secondary)
@@ -785,12 +824,31 @@ struct ActionRow: View {
             .menuStyle(.borderlessButton).fixedSize()
             VStack(alignment: .leading, spacing: 2) {
                 Text(action.title)
+                if !action.details.isEmpty {
+                    Text(action.details).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
                 HStack(spacing: 8) {
+                    if showsProject, let project = app.project(action.projectID) {
+                        Label(project.name, systemImage: "folder")
+                            .font(.caption).foregroundStyle(Self.color(project.color))
+                    }
                     if let owner = action.owner {
                         Label(owner, systemImage: "person").font(.caption)
                     }
                     if let due = action.dueDate {
                         Label(due.formatted(.dateTime.day().month()), systemImage: "calendar").font(.caption)
+                    }
+                    // Réunion d'origine : le contexte le plus utile, et jusqu'ici jamais affiché.
+                    if showsMeeting, let meeting = app.meeting(action.meetingID) {
+                        Button { app.selection = .meeting(meeting.id) } label: {
+                            Label(
+                                "\(meeting.title) · \(meeting.startedAt.formatted(.dateTime.day().month()))",
+                                systemImage: "calendar.badge.clock")
+                            .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Ouvrir la réunion d'origine")
                     }
                 }
                 .foregroundStyle(.secondary)
@@ -808,9 +866,33 @@ struct ActionRow: View {
         }
         .padding(.vertical, 2)
         .sheet(isPresented: $editing) {
-            ActionEditor(action: action) { app.updateAction($0) }
+            ActionEditor(action: action, projects: app.activeProjects) { app.updateAction($0) }
         }
     }
+
+    static func symbol(_ i: Involvement) -> String {
+        switch i {
+        case .own: "person.crop.circle.fill"
+        case .follow: "eye"
+        case .info: "tray"
+        }
+    }
+
+    /// Couleur nommée d'un projet → couleur SwiftUI. Palette fixe : un nom inconnu reste gris.
+    static func color(_ name: String?) -> Color {
+        switch name {
+        case "blue": .blue
+        case "green": .green
+        case "orange": .orange
+        case "purple": .purple
+        case "pink": .pink
+        case "red": .red
+        case "teal": .teal
+        case "yellow": .yellow
+        default: .secondary
+        }
+    }
+    static let projectColors = ["blue", "green", "orange", "purple", "pink", "red", "teal", "yellow"]
 
     static func symbol(_ s: ActionStatus) -> String {
         switch s {
@@ -832,25 +914,37 @@ struct ActionRow: View {
     }
 }
 
-/// Édition d'une action : titre, détail, responsable, échéance, priorité, statut.
+/// Édition d'une action : titre, contexte, projet, implication, responsable, échéance, priorité,
+/// statut. Sert aussi à la **création** (on lui passe un `ActionItem` neuf).
 struct ActionEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: ActionItem
     @State private var hasDue: Bool
     @State private var due: Date
+    let projects: [Project]
     let onSave: (ActionItem) -> Void
 
-    init(action: ActionItem, onSave: @escaping (ActionItem) -> Void) {
+    init(action: ActionItem, projects: [Project] = [], onSave: @escaping (ActionItem) -> Void) {
         _draft = State(initialValue: action)
         _hasDue = State(initialValue: action.dueDate != nil)
         _due = State(initialValue: action.dueDate ?? Date())
+        self.projects = projects
         self.onSave = onSave
     }
 
     var body: some View {
         Form {
             TextField("Titre", text: $draft.title)
-            TextField("Détail", text: $draft.details, axis: .vertical).lineLimit(2...5)
+            // Le champ « contexte » : tout ce qu'il faut savoir pour reprendre l'action plus tard.
+            TextField("Détail", text: $draft.details, axis: .vertical).lineLimit(4...10)
+            Picker("Projet", selection: $draft.projectID) {
+                Text("Aucun").tag(UUID?.none)
+                ForEach(projects) { p in Text(p.name).tag(UUID?.some(p.id)) }
+            }
+            Picker("Implication", selection: $draft.involvement) {
+                Text("Automatique (d'après le responsable)").tag(Involvement?.none)
+                ForEach(Involvement.allCases, id: \.self) { Text($0.label).tag(Involvement?.some($0)) }
+            }
             TextField("Responsable", text: Binding(
                 get: { draft.owner ?? "" },
                 set: { draft.owner = $0.isEmpty ? nil : $0 }))
@@ -888,43 +982,225 @@ struct ActionEditor: View {
     }
 }
 
-/// Tableau de bord de suivi (Phase 7) : actions ouvertes et en retard, transverses aux réunions.
+/// Gestion des projets (Réglages) : création, renommage, couleur, référent, actif/clos, suppression.
+/// Pas de fusion de projets — ponytail: à ajouter le jour où des doublons apparaissent vraiment.
+struct ProjectsEditor: View {
+    @Bindable var app: MeetingCoordinator
+    @State private var newName = ""
+    @State private var confirmDelete: Project?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(app.projects) { project in
+                HStack {
+                    Menu {
+                        ForEach(ActionRow.projectColors, id: \.self) { color in
+                            Button(color) { update(project) { $0.color = color } }
+                        }
+                    } label: {
+                        Image(systemName: "circle.fill").foregroundStyle(ActionRow.color(project.color))
+                    }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+
+                    TextField("Nom", text: Binding(
+                        get: { project.name },
+                        set: { name in update(project) { $0.name = name } }))
+
+                    TextField("Référent", text: Binding(
+                        get: { project.owner ?? "" },
+                        set: { o in update(project) { $0.owner = o.isEmpty ? nil : o } }))
+                    .frame(width: 120)
+
+                    // Un projet clos sort des sélecteurs ; ses actions restent dans le suivi.
+                    Toggle("Actif", isOn: Binding(
+                        get: { project.status == .active },
+                        set: { on in update(project) { $0.status = on ? .active : .closed } }))
+                    .toggleStyle(.checkbox)
+
+                    Button(role: .destructive) { confirmDelete = project } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            HStack {
+                TextField("Nouveau projet…", text: $newName).onSubmit(add)
+                Button("Ajouter", action: add)
+                    .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .confirmationDialog(
+            "Supprimer le projet « \(confirmDelete?.name ?? "") » ?",
+            isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Supprimer", role: .destructive) {
+                if let p = confirmDelete { app.deleteProject(p.id) }
+                confirmDelete = nil
+            }
+            Button("Annuler", role: .cancel) { confirmDelete = nil }
+        } message: {
+            Text("Ses actions et réunions sont conservées, simplement plus rattachées à un projet.")
+        }
+    }
+
+    private func add() {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        app.saveProject(Project(
+            name: name, color: ActionRow.projectColors[app.projects.count % ActionRow.projectColors.count]))
+        newName = ""
+    }
+
+    private func update(_ project: Project, _ change: (inout Project) -> Void) {
+        var copy = project
+        change(&copy)
+        app.saveProject(copy)
+    }
+}
+
+/// Sélecteur de projet réutilisé par la fiche réunion et la vue live. Écrit à chaque changement,
+/// sans bouton de validation — comme les éditeurs de tags/participants voisins.
+struct ProjectPicker: View {
+    @Bindable var app: MeetingCoordinator
+    let selection: UUID?
+    let onChange: (UUID?) -> Void
+
+    var body: some View {
+        Menu {
+            Button("Aucun projet") { onChange(nil) }
+            if !app.activeProjects.isEmpty { Divider() }
+            ForEach(app.activeProjects) { p in
+                Button(p.name) { onChange(p.id) }
+            }
+        } label: {
+            Label(app.project(selection)?.name ?? "Aucun projet", systemImage: "folder")
+                .foregroundStyle(ActionRow.color(app.project(selection)?.color))
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+        .help(app.activeProjects.isEmpty ? "Créer des projets dans les Réglages" : "Projet de la réunion")
+    }
+}
+
+/// Section pliable dont **tout le titre** réagit au clic : sur macOS, seul le chevron d'un
+/// `DisclosureGroup` est cliquable, or c'est le titre qu'on vise.
+struct Collapsible<Content: View>: View {
+    let title: String
+    var initiallyExpanded = true
+    var spacing: CGFloat = 4
+    @ViewBuilder let content: () -> Content
+    @State private var expanded: Bool?
+
+    var body: some View {
+        let isOpen = Binding(
+            get: { expanded ?? initiallyExpanded },
+            set: { expanded = $0 })
+        DisclosureGroup(isExpanded: isOpen) {
+            VStack(alignment: .leading, spacing: spacing) { content() }.padding(.top, 6)
+        } label: {
+            Text(title).font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
+                .onTapGesture { isOpen.wrappedValue.toggle() }
+        }
+    }
+}
+
+/// Tableau de bord de suivi : les actions ouvertes réparties par **implication** (ce que je porte,
+/// ce que je relance, le reste), puis par projet. Les retards ont leur section en tête et n'y sont
+/// pas répétés.
 struct DashboardView: View {
     @Bindable var app: MeetingCoordinator
+    /// Filtre projet (`nil` = tous). Vue seulement : rien à persister.
+    @State private var filter: UUID?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    Text("Suivi").font(.largeTitle.bold())
-                    Spacer()
-                    Button {
-                        Task { await app.exportOpenActionsToReminders() }
-                    } label: {
-                        Label("Exporter vers Rappels", systemImage: "checklist")
-                    }
-                    .disabled(app.openActions.isEmpty)
-                }
+                header
 
-                let overdue = app.overdueActions()
+                let overdue = keep(app.overdueActions())
                 if !overdue.isEmpty {
-                    GroupBox("En retard (\(overdue.count))") {
+                    GroupBox("⚠️ En retard (\(overdue.count))") {
                         ForEach(overdue) { ActionRow(app: app, action: $0) }
                     }
                 }
 
-                GroupBox("Actions ouvertes (\(app.openActions.count))") {
-                    if app.openActions.isEmpty {
-                        Text("Rien à suivre pour l'instant").foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        ForEach(app.openActions) { ActionRow(app: app, action: $0) }
+                ForEach(Involvement.allCases, id: \.self) { level in
+                    let items = keep(app.openActions(for: level))
+                    if !items.isEmpty {
+                        GroupBox {
+                            // « Pour info » est replié : c'est du bruit qu'on veut pouvoir ignorer.
+                            Collapsible(
+                                title: "\(level.label) (\(items.count))",
+                                initiallyExpanded: level != .info
+                            ) {
+                                projectSections(items)
+                            }
+                        }
                     }
+                }
+
+                if keep(app.openActions).isEmpty && overdue.isEmpty {
+                    Text(filter == nil ? "Rien à suivre pour l'instant" : "Rien à suivre sur ce projet")
+                        .foregroundStyle(.secondary)
                 }
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .sheet(item: $app.quickCapture) { draft in
+            ActionEditor(action: draft, projects: app.activeProjects) { app.addAction($0) }
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            Text("Suivi").font(.largeTitle.bold())
+            Spacer()
+            Menu {
+                Button("Tous les projets") { filter = nil }
+                Divider()
+                ForEach(app.activeProjects) { p in
+                    Button(p.name) { filter = p.id }
+                }
+            } label: {
+                Label(app.project(filter)?.name ?? "Tous les projets", systemImage: "folder")
+            }
+            .fixedSize()
+            Button {
+                app.beginQuickCapture(projectID: filter)
+            } label: {
+                Label("Nouvelle action", systemImage: "plus")
+            }
+            Button {
+                Task { await app.exportOpenActionsToReminders() }
+            } label: {
+                Label("Exporter vers Rappels", systemImage: "checklist")
+            }
+            .disabled(app.openActions.isEmpty)
+        }
+    }
+
+    /// Un seul projet en vue ⇒ inutile de répéter son nom en sous-section.
+    @ViewBuilder
+    private func projectSections(_ items: [ActionItem]) -> some View {
+        let groups = app.groupedByProject(items)
+        if groups.count <= 1 {
+            ForEach(items) { ActionRow(app: app, action: $0, showsProject: groups.first?.project == nil) }
+        } else {
+            ForEach(groups) { group in
+                Text(group.name).font(.subheadline.bold())
+                    .foregroundStyle(ActionRow.color(group.project?.color))
+                    .padding(.top, 4)
+                ForEach(group.actions) { ActionRow(app: app, action: $0, showsProject: false) }
+            }
+        }
+    }
+
+    private func keep(_ items: [ActionItem]) -> [ActionItem] {
+        guard let filter else { return items }
+        return items.filter { $0.projectID == filter }
     }
 }
 
@@ -948,18 +1224,34 @@ struct LiveTranscriptView: View {
                 Text(app.isRecording ? "En direct" : "Aucun enregistrement")
                     .font(.headline)
                 Spacer()
+                // Projet et tags choisis PENDANT la réunion : ils ciblent le pré-brief tout de
+                // suite, et la fenêtre de nommage les retrouve déjà remplis à l'arrêt.
+                if app.isRecording {
+                    ProjectPicker(app: app, selection: app.currentProjectID) { app.setCurrentProject($0) }
+                }
             }
 
-            // Pré-brief (Phase D) : ce qui restait ouvert avec ces participants.
+            if app.isRecording, !app.allTags.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(app.allTags, id: \.self) { tag in
+                            TagChip(label: tag, selected: app.currentTags.contains(tag)) {
+                                app.toggleCurrentTag(tag)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Pré-brief : ce qui restait ouvert sur ce projet / avec ces participants.
             if !app.preBrief.isEmpty {
                 GroupBox {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label("À suivre depuis les réunions précédentes", systemImage: "clock.arrow.circlepath")
-                            .font(.subheadline).foregroundStyle(.secondary)
-                        ForEach(app.preBrief.prefix(5)) { a in
+                    Collapsible(title: "À suivre depuis les réunions précédentes (\(app.preBrief.count))") {
+                        ForEach(app.preBrief.prefix(8)) { a in
                             Text("• \(a.title)" + (a.owner.map { " (@\($0))" } ?? "")).font(.callout)
                         }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
 
@@ -1240,6 +1532,19 @@ struct AdminView: View {
                     Button("Choisir…") { chooseVaultFolder() }
                 }
             }
+
+            Section("Moi & mon équipe") {
+                TextField("Mon nom", text: $app.settings.userName)
+                    .help("Votre nom tel qu'il apparaît comme responsable d'une action. Sert à classer « À moi » dans le suivi, et à ce que l'IA écrive un vrai nom plutôt que « moi ».")
+                ValueListEditor(
+                    systemImage: "person.2", title: "Mes collaborateurs",
+                    placeholder: "Ajouter un collaborateur…", values: app.settings.teamMembers
+                ) { app.settings.teamMembers = $0; app.saveSettings() }
+                Text("Les actions confiées à ces personnes passent en « À suivre » ; les autres en « Pour info ». Toujours modifiable action par action.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Projets") { ProjectsEditor(app: app) }
 
             Section("Prompt d'analyse (structuration après transcript)") {
                 TextEditor(text: $app.settings.agenticPrompt)

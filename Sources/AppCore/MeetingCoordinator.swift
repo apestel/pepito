@@ -11,6 +11,15 @@ import MailKit
 /// Contrôleur applicatif principal (@MainActor, observable) : réglages, enregistrement, et
 /// pipeline de bout en bout capture → transcription → analyse agentic. Point d'entrée unique de
 /// l'UI. Les dépendances (transcripteur, provider) sont injectables pour tests/previews.
+/// Écran affiché dans le volet de détail : le transcript live (pendant un enregistrement), le suivi
+/// transverse, une revue de mails, ou une réunion.
+public enum SidebarItem: Hashable, Sendable {
+    case live
+    case dashboard
+    case mailReview(String)
+    case meeting(UUID)
+}
+
 @MainActor
 @Observable
 public final class MeetingCoordinator {
@@ -23,6 +32,8 @@ public final class MeetingCoordinator {
     // Données (Phase 7)
     public var meetings: [Meeting] = []
     public var actions: [ActionItem] = []
+    /// Projets connus (actifs et clos). Le suivi s'organise autour d'eux.
+    public var projects: [Project] = []
     /// Tags connus (liste réutilisable), pour le sélecteur de la fenêtre de nommage.
     public var allTags: [String] = []
 
@@ -40,6 +51,20 @@ public final class MeetingCoordinator {
     public var mailStatus: String?
     public var mailReviews: [MailReviewSummary] = []
     public var lastMailReviewDate: String?
+
+    /// Sélection de la barre latérale. Portée par le coordinateur (et non par `MainView`) pour que
+    /// n'importe quel écran puisse y naviguer — typiquement une action vers sa réunion d'origine.
+    public var selection: SidebarItem = .dashboard
+
+    /// Action en cours de saisie manuelle. Portée ici pour que la barre de menu puisse déclencher la
+    /// saisie dans la fenêtre principale : un popover de `MenuBarExtra` se referme, il ne peut pas
+    /// héberger la feuille lui-même.
+    public var quickCapture: ActionItem?
+
+    /// Ouvre la saisie d'une nouvelle action sur le suivi.
+    public func beginQuickCapture(projectID: UUID? = nil, meetingID: UUID? = nil) {
+        quickCapture = ActionItem(meetingID: meetingID, projectID: projectID, title: "")
+    }
 
     // État d'exécution
     public var isRecording: Bool = false
@@ -159,6 +184,7 @@ public final class MeetingCoordinator {
         self.settings = settingsStore.load()
         self.meetings = database.loadAll()
         self.actions = database.loadAllActions()
+        self.projects = database.loadProjects()
         self.allTags = database.allTags()
         self.mailReviews = database.mailReviews()
         self.tokenPresent = ((try? tokenStore.token(for: tokenAccount)) ?? nil) != nil
@@ -243,11 +269,15 @@ public final class MeetingCoordinator {
         // Contexte calendrier (best effort) : pré-remplit titre + participants, mémorise l'agenda.
         let event = await calendar.currentOrImminentEvent()
         currentAgenda = event?.agenda ?? ""
+        let title = (event?.title.isEmpty == false) ? event!.title : tempTitle
         let meeting = Meeting(
-            title: (event?.title.isEmpty == false) ? event!.title : tempTitle,
+            title: title,
             startedAt: started,
             participants: event?.participants ?? [],
             status: .recording,
+            // Projet deviné dès le départ depuis le titre de l'événement : c'est ce qui rend le
+            // pré-brief pertinent, alors que les tags n'arrivent qu'à l'arrêt.
+            projectID: matchProject(named: title)?.id,
             sessionDirPath: sessionDir.path
         )
         currentMeeting = meeting
@@ -379,7 +409,9 @@ public final class MeetingCoordinator {
                 agenticPrompt: settings.agenticPrompt,
                 context: currentAgenda,
                 userNotes: meeting.userNotes,
-                openActions: Self.openActionsText(followUp)
+                openActions: Self.openActionsText(followUp),
+                projects: projects,
+                userName: settings.userName
             )
             actions.removeAll { $0.meetingID == meeting.id }   // idempotent en cas de reprise
             actions.append(contentsOf: result.actions)
@@ -402,6 +434,29 @@ public final class MeetingCoordinator {
 
     /// Réunion en cours de nommage/traitement (pour la fenêtre de nommage).
     public var pendingMeeting: Meeting? { currentMeeting }
+
+    // MARK: - Projet & tags pendant la réunion
+
+    /// Projet de la réunion en cours. Modifiable en direct : c'est ce qui rend le pré-brief
+    /// pertinent sans attendre la fenêtre de nommage.
+    public var currentProjectID: UUID? { currentMeeting?.projectID }
+    public var currentTags: [String] { currentMeeting?.tags ?? [] }
+
+    public func setCurrentProject(_ id: UUID?) {
+        guard var meeting = currentMeeting else { return }
+        meeting.projectID = id
+        currentMeeting = meeting
+        persist(meeting)
+        preBrief = relevantOpenActions(for: meeting)   // recentré sur le projet, tout de suite
+    }
+
+    public func toggleCurrentTag(_ tag: String) {
+        guard var meeting = currentMeeting else { return }
+        if let i = meeting.tags.firstIndex(of: tag) { meeting.tags.remove(at: i) }
+        else { meeting.tags.append(tag) }
+        currentMeeting = meeting
+        persist(meeting)
+    }
 
     /// Relance le pipeline sur la réunion en cours (bouton « Réessayer » après un échec).
     public func retryProcessing() async {
@@ -728,7 +783,103 @@ public final class MeetingCoordinator {
     }
 
     public func overdueActions(asOf now: Date = Date()) -> [ActionItem] {
-        ActionTracking.overdueItems(asOf: now, in: actions)
+        ActionTracking.sortedForFollowUp(ActionTracking.overdueItems(asOf: now, in: actions))
+    }
+
+    /// Implication effective d'une action : surcharge manuelle, sinon déduite du responsable via les
+    /// réglages « moi » / « mon équipe ».
+    public func involvement(of action: ActionItem) -> Involvement {
+        action.resolvedInvolvement(me: settings.userName, team: settings.teamMembers)
+    }
+
+    /// Actions ouvertes d'une catégorie d'implication. Les retards sont exclus par défaut : ils ont
+    /// leur propre section en tête du suivi, les lister deux fois n'aide personne.
+    public func openActions(
+        for involvement: Involvement, excludingOverdue: Bool = true, asOf now: Date = Date()
+    ) -> [ActionItem] {
+        let overdue = excludingOverdue ? Set(overdueActions(asOf: now).map(\.id)) : []
+        return openActions.filter {
+            self.involvement(of: $0) == involvement && !overdue.contains($0.id)
+        }
+    }
+
+    /// Actions d'une même catégorie réparties par projet : projets connus d'abord (ordre de
+    /// `projects`), « Sans projet » en dernier.
+    public func groupedByProject(_ items: [ActionItem]) -> [ProjectGroup] {
+        let buckets = Dictionary(grouping: items, by: \.projectID)
+        var groups = projects.compactMap { p in
+            buckets[p.id].map { ProjectGroup(project: p, actions: $0) }
+        }
+        if let orphans = buckets[nil] { groups.append(ProjectGroup(project: nil, actions: orphans)) }
+        return groups
+    }
+
+    public var activeProjects: [Project] { projects.filter { $0.status == .active } }
+
+    public func project(_ id: UUID?) -> Project? {
+        guard let id else { return nil }
+        return projects.first { $0.id == id }
+    }
+
+    public func meeting(_ id: UUID?) -> Meeting? {
+        guard let id else { return nil }
+        return meetings.first { $0.id == id }
+    }
+
+    /// Réunions de la barre latérale, les récurrentes regroupées sous leur titre. `meetings` arrive
+    /// déjà en `started_at DESC` : l'ordre chronologique décroissant est conservé dans chaque groupe
+    /// comme entre les groupes (un groupe se classe à la date de son occurrence la plus récente).
+    public var meetingSeries: [MeetingSeries] {
+        var order: [String] = []
+        var byKey: [String: [Meeting]] = [:]
+        for meeting in meetings {
+            let key = meeting.seriesKey
+            if byKey[key] == nil { order.append(key) }
+            byKey[key, default: []].append(meeting)
+        }
+        return order.map { MeetingSeries(key: $0, meetings: byKey[$0] ?? []) }
+    }
+
+    /// Projet dont le nom se rapproche le plus d'un texte libre (titre d'événement calendrier, nom
+    /// renvoyé par l'IA) : correspondance exacte, sinon nom de projet contenu dans le texte.
+    public func matchProject(named text: String) -> Project? {
+        let key = Project.matchKey(text)
+        guard !key.isEmpty else { return nil }
+        if let exact = activeProjects.first(where: { Project.matchKey($0.name) == key }) { return exact }
+        // Le plus long nom gagne : « Migration SI RH » l'emporte sur « Migration SI ».
+        return activeProjects
+            .filter { !Project.matchKey($0.name).isEmpty && key.contains(Project.matchKey($0.name)) }
+            .max { Project.matchKey($0.name).count < Project.matchKey($1.name).count }
+    }
+
+    // MARK: - Édition des actions
+
+    /// Crée une action à la main (suivi, fiche réunion, barre de menu) — le seul chemin de naissance
+    /// hors pipelines IA.
+    public func addAction(_ action: ActionItem) {
+        actions.append(action)
+        database.saveActions([action])
+    }
+
+    /// Pose ou retire la surcharge d'implication (`nil` = revenir à la déduction automatique).
+    public func setInvolvement(_ id: UUID, to involvement: Involvement?) {
+        if let i = actions.firstIndex(where: { $0.id == id }) { actions[i].involvement = involvement }
+        database.updateInvolvement(id, involvement)
+    }
+
+    // MARK: - Projets
+
+    public func saveProject(_ project: Project) {
+        database.saveProject(project)
+        projects = database.loadProjects()
+    }
+
+    /// Supprime un projet. Ses actions restent dans le suivi, simplement non classées.
+    public func deleteProject(_ id: UUID) {
+        database.deleteProject(id)
+        projects = database.loadProjects()
+        actions = database.loadAllActions()
+        meetings = database.loadAll()
     }
 
     private let reminders = RemindersExporter()
@@ -814,11 +965,15 @@ public final class MeetingCoordinator {
         mailReviews = database.mailReviews()
     }
 
-    /// Édition manuelle complète d'une action (titre, responsable, échéance, priorité, statut).
+    /// Édition manuelle complète d'une action (titre, responsable, échéance, priorité, statut,
+    /// projet, implication).
     public func updateAction(_ action: ActionItem) {
         if let i = actions.firstIndex(where: { $0.id == action.id }) { actions[i] = action }
         database.saveActions([action])
-        updateActionStatus(action.id, to: action.status)   // saveActions préserve volontairement le statut
+        // saveActions préserve volontairement statut et implication : ici l'utilisateur les a
+        // explicitement édités, on les réécrit.
+        database.updateInvolvement(action.id, action.involvement)
+        updateActionStatus(action.id, to: action.status)
     }
 
     /// Édition manuelle d'une réunion (titre, tags, participants) depuis sa fiche.
@@ -828,24 +983,37 @@ public final class MeetingCoordinator {
         if currentMeeting?.id == meeting.id { currentMeeting = meeting }
     }
 
-    /// Actions ouvertes de réunions **passées** pertinentes pour la réunion `meeting` : mêmes
-    /// participants (via l'owner ou les participants de la réunion d'origine). Sert au pré-brief et
-    /// à l'auto-résolution. Bornée pour ne pas gonfler le prompt.
+    /// Actions ouvertes de réunions **passées** pertinentes pour `meeting`. Sert au pré-brief et à
+    /// l'auto-résolution ; bornée pour ne pas gonfler le prompt.
+    ///
+    /// Score plutôt que filtre binaire : le projet de la réunion prime (seul critère disponible dès
+    /// le démarrage, avant le nommage), puis le responsable, puis le recoupement de participants.
+    /// Sans projet renseigné on retrouve exactement l'ancien comportement.
     /// ponytail: overlap simple par nom ; pas de désambiguïsation d'identité (à affiner si besoin).
-    private func relevantOpenActions(for meeting: Meeting) -> [ActionItem] {
+    func relevantOpenActions(for meeting: Meeting) -> [ActionItem] {
         let participants = Set(meeting.participants.map { $0.lowercased() })
         let byMeeting = Dictionary(
             meetings.map { ($0.id, Set($0.participants.map { $0.lowercased() })) },
             uniquingKeysWith: { a, _ in a })
-        let open = ActionTracking.sortedForFollowUp(ActionTracking.openItems(in: actions))
-        let filtered = open.filter { a in
-            guard a.meetingID != meeting.id else { return false }        // pas les actions de CETTE réunion
-            if participants.isEmpty { return true }                       // participants inconnus → tout (borné)
-            if let owner = a.owner, participants.contains(owner.lowercased()) { return true }
-            if let mid = a.meetingID, let p = byMeeting[mid], !p.isDisjoint(with: participants) { return true }
-            return false
+
+        func score(_ a: ActionItem) -> Int {
+            var score = 0
+            if let project = meeting.projectID, a.projectID == project { score += 10 }
+            if let owner = a.owner, participants.contains(owner.lowercased()) { score += 5 }
+            if let mid = a.meetingID, let p = byMeeting[mid], !p.isDisjoint(with: participants) { score += 2 }
+            // Ce que je ne porte ni ne suis n'a rien à faire dans un pré-brief.
+            if involvement(of: a) == .info { score -= 3 }
+            return score
         }
-        return Array(filtered.prefix(20))
+
+        let open = ActionTracking.sortedForFollowUp(ActionTracking.openItems(in: actions))
+            .filter { $0.meetingID != meeting.id }   // pas les actions de CETTE réunion
+        let scored = open.map { (item: $0, score: score($0)) }
+        // Rien de rattachable (réunion sans projet ni participants connus) : on garde la liste
+        // triée par urgence plutôt que de n'afficher aucun rappel.
+        let relevant = scored.contains { $0.score > 0 } ? scored.filter { $0.score > 0 } : scored
+        // `sorted` est stable : à score égal, l'ordre de suivi (priorité, échéance) est conservé.
+        return Array(relevant.sorted { $0.score > $1.score }.map(\.item).prefix(20))
     }
 
     private static func openActionsText(_ items: [ActionItem]) -> String {

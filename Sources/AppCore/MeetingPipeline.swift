@@ -33,9 +33,14 @@ public struct MeetingPipeline {
         agenticPrompt: String = PromptTemplate.defaultAgenticPrompt,
         context: String = "",
         userNotes: String = "",
-        openActions: String = ""
+        openActions: String = "",
+        projects: [Project] = [],
+        userName: String = ""
     ) async throws -> PipelineResult {
         let dateString = Self.dateFormatter.string(from: meeting.startedAt)
+        // Le contrat JSON, la liste des projets et l'identité vivent **dans le code**, pas dans
+        // `defaultAgenticPrompt` : ce défaut-là est figé dans le settings.json des installations
+        // existantes, le modifier ne changerait rien pour elles.
         let systemPrompt = PromptTemplate.render(
             agenticPrompt,
             context: PromptContext(
@@ -47,7 +52,9 @@ public struct MeetingPipeline {
                 userNotes: userNotes,
                 openActions: openActions
             )
-        ) + "\n\n" + Self.jsonContract
+        ) + "\n\n" + Self.identityBlock(userName)
+          + Self.projectsBlock(projects, current: projects.first { $0.id == meeting.projectID })
+          + Self.jsonContract
 
         let reply = try await provider.complete(messages: [
             ChatMessage(role: .system, content: systemPrompt),
@@ -60,14 +67,19 @@ public struct MeetingPipeline {
         // en une passe, avec l'`id` embarqué en commentaire HTML pour rester reconstructible (§4).
         var actions: [ActionItem] = []
         var planLines: [String] = []
+        let projectsByKey = Dictionary(
+            projects.map { (Project.matchKey($0.name), $0.id) }, uniquingKeysWith: { a, _ in a })
         func add(_ list: [AnalysisResult.Action], parent: UUID?, depth: Int) {
             for a in list {
                 let item = ActionItem(
                     parentID: parent,
                     meetingID: meeting.id,
+                    // Projet nommé par le modèle s'il existe, sinon celui de la réunion.
+                    projectID: a.project.flatMap { projectsByKey[Project.matchKey($0)] }
+                        ?? meeting.projectID,
                     title: a.title,
                     details: a.details ?? "",
-                    owner: a.owner,
+                    owner: Self.resolveOwner(a.owner, userName: userName),
                     dueDate: a.dueDate.flatMap(Self.parseDate),
                     priority: Self.parsePriority(a.priority)
                 )
@@ -138,10 +150,11 @@ public struct MeetingPipeline {
             let owner: String?
             let dueDate: String?
             let priority: String?
+            let project: String?
             let children: [Action]?
 
             enum CodingKeys: String, CodingKey {
-                case title, details, owner, priority, children
+                case title, details, owner, priority, children, project
                 case dueDate = "due_date"
             }
         }
@@ -160,14 +173,43 @@ public struct MeetingPipeline {
         }
     }
 
+    /// Nom de l'utilisateur : sans lui, le modèle écrit « moi » ou « je » comme responsable, et le
+    /// suivi ne sait plus ce qui lui revient.
+    static func identityBlock(_ userName: String) -> String {
+        let name = userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return "" }
+        return """
+        L'utilisateur qui enregistre s'appelle « \(name) ». Quand une action lui revient (« je »,
+        « moi », « de mon côté »), mets EXACTEMENT « \(name) » dans "owner" — jamais « moi ».
+
+        """
+    }
+
+    /// Liste des projets ouverts. Le modèle **choisit dedans**, il n'en crée pas : sinon chaque
+    /// réunion invente ses propres libellés et le regroupement ne veut plus rien dire.
+    /// ponytail: création de projet réservée aux Réglages ; à rouvrir si la saisie manuelle lasse.
+    static func projectsBlock(_ projects: [Project], current: Project?) -> String {
+        let open = projects.filter { $0.status == .active }
+        guard !open.isEmpty else { return "" }
+        var s = "Projets existants (à réutiliser tels quels dans \"project\", jamais d'autre nom) :\n"
+        s += open.map { "- \($0.name)" }.joined(separator: "\n")
+        if let current {
+            s += "\nProjet par défaut de cette réunion : « \(current.name) » — mets \"project\": null"
+                + " pour l'utiliser."
+        }
+        return s + "\n\n"
+    }
+
     static let jsonContract = """
     Réponds UNIQUEMENT avec un objet JSON valide de cette forme, sans aucun texte autour :
     {
       "summary": "<résumé de la réunion en Markdown>",
       "tags": ["<mot-clé>"],
       "actions": [
-        {"title":"<titre>","details":"<détails>","owner":"<responsable ou null>",
+        {"title":"<titre>","details":"<contexte utile pour reprendre l'action plus tard>",
+         "owner":"<responsable ou null>",
          "due_date":"<AAAA-MM-JJ ou null>","priority":"high|medium|low",
+         "project":"<nom EXACT d'un projet listé ci-dessus, ou null>",
          "children":[ { … même structure pour les sous-tâches … } ]}
       ],
       "action_updates": [
@@ -175,9 +217,23 @@ public struct MeetingPipeline {
          "status":"done|in-progress|blocked|dropped"}
       ]
     }
+    Les lignes des notes de l'utilisateur commençant par « - [ ] », « TODO » ou « À faire » sont des
+    actions : reprends-les telles quelles dans "actions", sans les reformuler.
     "action_updates" ne concerne QUE les actions ouvertes listées dans le contexte : n'y mets un
     élément que si le transcript indique clairement un changement de statut ; sinon renvoie [].
     """
+
+    /// Le modèle écrit parfois « moi »/« je » malgré la consigne : on rétablit le vrai nom, sinon
+    /// l'action est classée « pour info » alors qu'elle m'incombe.
+    static func resolveOwner(_ raw: String?, userName: String) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let name = userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return trimmed }
+        let selfWords = ["moi", "je", "me", "myself", "self", "utilisateur"]
+        return selfWords.contains(trimmed.lowercased()) ? name : trimmed
+    }
 
     static func parse(_ content: String) throws -> AnalysisResult {
         let cleaned = stripFences(content)

@@ -88,3 +88,79 @@ private func date(_ offsetDays: Int, from base: Date) -> Date {
     // 1 done sur 2 suivies (abandonnée exclue)
     #expect(ActionTracking.completionRatio(in: items) == 0.5)
 }
+
+// MARK: - Implication (qui porte, qui suit)
+
+@Test func involvementIsDerivedFromOwner() {
+    let me = "Antoine Pestel"
+    let team = ["Marc Dupont", "Sofia"]
+    func involvement(owner: String?) -> Involvement {
+        ActionItem(title: "x", owner: owner).resolvedInvolvement(me: me, team: team)
+    }
+
+    #expect(involvement(owner: "Antoine Pestel") == .own)
+    #expect(involvement(owner: "antoine pestel") == .own)     // casse
+    #expect(involvement(owner: "Antoine") == .own)            // prénom seul
+    #expect(involvement(owner: "Marc Dupont") == .follow)
+    #expect(involvement(owner: "Sofia") == .follow)
+    #expect(involvement(owner: "Sofía") == .follow)           // accent
+    #expect(involvement(owner: "Claire Martin") == .info)
+    // Sans responsable, l'action retombe sur moi plutôt que de disparaître dans « pour info ».
+    #expect(involvement(owner: nil) == .own)
+    #expect(involvement(owner: "  ") == .own)
+}
+
+@Test func manualInvolvementOverridesDerivation() {
+    let watched = ActionItem(title: "x", owner: "Claire Martin", involvement: .follow)
+    #expect(watched.resolvedInvolvement(me: "Antoine", team: []) == .follow)
+    let ignored = ActionItem(title: "x", owner: "Antoine", involvement: .info)
+    #expect(ignored.resolvedInvolvement(me: "Antoine", team: []) == .info)
+}
+
+@Test func samePersonDoesNotMergeDistinctFullNames() {
+    // Deux collaborateurs partageant un prénom restent deux personnes.
+    #expect(ActionItem.samePerson("Marc Dupont", "Marc Durand") == false)
+    #expect(ActionItem.samePerson("Marc", "Marc Durand"))
+    #expect(ActionItem.samePerson("", "Marc") == false)
+}
+
+// MARK: - Projets
+
+@Test func projectMatchKeyIgnoresCaseAccentsAndPunctuation() {
+    #expect(Project.matchKey("Migration SI") == Project.matchKey("migration  si"))
+    #expect(Project.matchKey("Réunion : Été 2026") == "reunion ete 2026")
+    #expect(Project.matchKey("") == "")
+}
+
+@Test func projectGroupNamesOrphans() {
+    let p = Project(name: "Migration SI")
+    #expect(ProjectGroup(project: p, actions: []).name == "Migration SI")
+    #expect(ProjectGroup(project: nil, actions: []).name == "Sans projet")
+    #expect(ProjectGroup(project: nil, actions: []).id == "sans-projet")
+}
+
+// MARK: - Aplatissement pour l'affichage
+
+@Test func flattenedRendersChildrenUnderTheirParent() {
+    let a = ActionItem(title: "épique")
+    let a1 = ActionItem(parentID: a.id, title: "sous-tâche")
+    let a11 = ActionItem(parentID: a1.id, title: "sous-sous-tâche")
+    let b = ActionItem(title: "autre racine")
+    // Les racines gardent leur ordre d'entrée (celui de la base) ; les enfants remontent sous leur
+    // parent quelle que soit leur position.
+    let flat = ActionHierarchy.flattened(in: [a, b, a11, a1])
+
+    #expect(flat.map(\.item.title) == ["épique", "sous-tâche", "sous-sous-tâche", "autre racine"])
+    #expect(flat.map(\.depth) == [0, 1, 2, 0])
+}
+
+@Test func flattenedEmitsEveryActionEvenInACycle() {
+    // Un cycle n'a pas de racine : sans rattrapage, ses actions disparaîtraient de l'affichage.
+    let x = UUID(), y = UUID()
+    let items = [
+        ActionItem(id: x, parentID: y, title: "x"),
+        ActionItem(id: y, parentID: x, title: "y"),
+    ]
+    #expect(ActionHierarchy.hasCycle(in: items))
+    #expect(Set(ActionHierarchy.flattened(in: items).map(\.item.title)) == ["x", "y"])
+}

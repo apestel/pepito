@@ -37,6 +37,11 @@ public struct Settings: Sendable, Codable, Equatable {
     public var mailPrompt: String
     /// Garde-fou : nombre maximum de messages extraits par triage.
     public var mailLimit: Int
+    /// Mon nom, tel qu'il apparaît comme responsable d'une action. Sert à classer « à moi » et à
+    /// éviter que l'IA écrive « moi » dans le champ responsable.
+    public var userName: String
+    /// Collaborateurs dont je suis les actions sans les porter (→ « à suivre »).
+    public var teamMembers: [String]
 
     public init(
         aiBaseURL: String = "https://api.openai.com/v1",
@@ -48,7 +53,9 @@ public struct Settings: Sendable, Codable, Equatable {
         echoCancellation: EchoCancellationMode = .offlineReference,
         systemCaptureBundleID: String = "",
         mailPrompt: String = PromptTemplate.defaultMailPrompt,
-        mailLimit: Int = 300
+        mailLimit: Int = 300,
+        userName: String = "",
+        teamMembers: [String] = []
     ) {
         self.aiBaseURL = aiBaseURL
         self.aiModel = aiModel
@@ -60,6 +67,8 @@ public struct Settings: Sendable, Codable, Equatable {
         self.systemCaptureBundleID = systemCaptureBundleID
         self.mailPrompt = mailPrompt
         self.mailLimit = mailLimit
+        self.userName = userName
+        self.teamMembers = teamMembers
     }
 
     /// Décodage tolérant : un champ absent (ancien fichier) prend sa valeur par défaut, plutôt que
@@ -77,6 +86,8 @@ public struct Settings: Sendable, Codable, Equatable {
         systemCaptureBundleID = try c.decodeIfPresent(String.self, forKey: .systemCaptureBundleID) ?? d.systemCaptureBundleID
         mailPrompt = try c.decodeIfPresent(String.self, forKey: .mailPrompt) ?? d.mailPrompt
         mailLimit = try c.decodeIfPresent(Int.self, forKey: .mailLimit) ?? d.mailLimit
+        userName = try c.decodeIfPresent(String.self, forKey: .userName) ?? d.userName
+        teamMembers = try c.decodeIfPresent([String].self, forKey: .teamMembers) ?? d.teamMembers
     }
 
     public static let `default` = Settings()

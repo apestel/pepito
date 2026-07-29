@@ -41,6 +41,30 @@ public enum ActionHierarchy {
         return depth
     }
 
+    /// Une action et sa profondeur d'affichage (racine = 0).
+    public struct Indented: Sendable, Identifiable {
+        public let item: ActionItem
+        public let depth: Int
+        public var id: UUID { item.id }
+    }
+
+    /// Parcours préfixe : chaque action suivie de ses descendants, avec sa profondeur. Rend la
+    /// hiérarchie affichable par un `ForEach` plat — une vue SwiftUI ne peut pas se rappeler
+    /// elle-même. Robuste aux cycles (une action n'est émise qu'une fois).
+    public static func flattened(in items: [ActionItem]) -> [Indented] {
+        var out: [Indented] = []
+        var visited: Set<UUID> = []
+        func walk(_ item: ActionItem, _ depth: Int) {
+            guard visited.insert(item.id).inserted else { return }
+            out.append(Indented(item: item, depth: depth))
+            for child in children(of: item.id, in: items) { walk(child, depth + 1) }
+        }
+        for root in roots(in: items) { walk(root, 0) }
+        // Un cycle isolé n'a pas de racine : ses membres seraient perdus sans ce rattrapage.
+        for item in items where !visited.contains(item.id) { walk(item, 0) }
+        return out
+    }
+
     /// Détecte un cycle parent→enfant dans l'ensemble.
     public static func hasCycle(in items: [ActionItem]) -> Bool {
         let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })

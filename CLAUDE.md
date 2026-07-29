@@ -93,15 +93,22 @@ Swift Package local testable isolément.
 ## 4. Modèle de données (domaine)
 
 - **Meeting** — id, titre, date début/fin, participants (best-effort), source(s) audio,
-  chemin transcript, statut (recording / transcribing / processing / done), tags.
+  chemin transcript, statut (recording / awaiting-name / transcribing / processing / done), tags,
+  **projectId** (choisi dès le démarrage, rapproché du titre de l'événement calendrier).
 - **TranscriptSegment** — meetingId, t0/t1, speaker (best-effort), texte, confiance.
-- **ActionItem** — id, meetingId d'origine, titre, description, **parentId** (hiérarchie),
-  responsable, échéance, statut (todo / in-progress / blocked / done / dropped), priorité,
-  liens vers segments/transcript sources, historique de suivi.
+- **Project** — id, nom, statut (active / closed), couleur, référent. Regroupe les actions
+  transversalement : une même réunion en produit sur plusieurs projets.
+- **ActionItem** — id, meetingId d'origine, **projectId**, titre, `details` (le champ « contexte »),
+  **parentId** (hiérarchie), responsable, échéance, statut (todo / in-progress / blocked / done /
+  dropped), priorité, `sourceURL` (origine mail), **involvement**.
+  `involvement` (own / follow / info) est **nullable = déduit** du responsable via
+  `Settings.userName` / `teamMembers` ; la colonne n'est écrite qu'en cas de surcharge manuelle,
+  si bien que corriger la liste de l'équipe reclasse tout l'historique. Les upserts du pipeline
+  préservent `status` **et** `involvement` : un re-traitement n'écrase jamais un suivi manuel.
 - **VaultDocument** — chemin relatif dans l'arborescence, type (meeting-note / summary /
   action-plan / index), front-matter YAML, contenu Markdown.
 - **Settings** — endpoint IA, token (Keychain), modèle, dossier Vault, prompt agentic, options
-  de capture, langue de transcription.
+  de capture, langue de transcription, **userName / teamMembers** (qui suis-je, qui je supervise).
 
 Format de stockage : **Markdown + front-matter YAML** dans le dossier Vault choisi par
 l'utilisateur (portable, versionnable avec git, lisible sans l'app). Les métadonnées/index vivent
@@ -178,6 +185,17 @@ vs endpoint distant, raccourci global.
 - Logs via `os.Logger` (sous-systèmes par Kit). Pas de PII/transcript dans les logs par défaut.
 - Erreurs typées par domaine ; jamais de `try!` sur un chemin utilisateur.
 - Style : suivre le code environnant ; documenter les API publiques des Kits.
+- **Consignes destinées au modèle : dans le code, pas dans les prompts par défaut.** Modifier
+  `PromptTemplate.defaultAgenticPrompt` ne change rien pour une installation existante — sa valeur
+  est figée dans `settings.json` au premier lancement. Toute instruction qui doit s'appliquer à
+  tout le monde (contrat JSON, liste des projets, identité de l'utilisateur) est concaténée en Swift
+  autour du prompt utilisateur : voir `MeetingPipeline.jsonContract` / `projectsBlock` /
+  `identityBlock`. Corollaire : pas de nouvelle variable `{{…}}` pour ça.
+- **Migrations SQLite** : additives et idempotentes (`PRAGMA table_info` + `ALTER TABLE`), pas de
+  numéro de version. Ajouter un champ à `ActionItem` = 5 endroits dans `Database.swift` (`schema`,
+  `migrate()`, l'INSERT **et** la clause `DO UPDATE` de `saveActions`, `actionSelect`, `buildAction`).
+  Ce qu'un humain a édité à la main (`status`, `involvement`) est **exclu du `DO UPDATE`** pour
+  survivre à un re-traitement du pipeline.
 
 ---
 
@@ -239,10 +257,12 @@ sous `Sources/`, tests sous `Tests/`, app exécutable `Sources/Pepito`.
 
 ## 11. État & feuille de route (résumé)
 
-- **Statut actuel** : Phases 0 → 7 implémentées + triage mail natif (89 tests verts, `swift build`/`swift test` OK,
-  l'app se lance). Logique testée : Vault, client IA OpenAI-compatible (requête/réponse/SSE/chunking),
-  boucle agentic + outils + `MeetingPipeline`, hiérarchie & suivi des actions, réglages/Keychain,
-  `MeetingStore`, et l'orchestration end-to-end `MeetingCoordinator` (capture→transcription→analyse).
+- **Statut actuel** : Phases 0 → 7 implémentées + triage mail natif + **structuration des tâches**
+  (projets, implication, saisie manuelle, séries de réunions) — 109 tests verts, `swift build`/`swift test` OK,
+  l'app se lance et migre une base existante sans perte. Logique testée : Vault, client IA OpenAI-compatible
+  (requête/réponse/SSE/chunking), boucle agentic + outils + `MeetingPipeline`, hiérarchie & suivi des
+  actions, déduction d'implication, résolution de projet, pré-brief scoré, clés de série, réglages/Keychain,
+  et l'orchestration end-to-end `MeetingCoordinator` (capture→transcription→analyse).
   **Réel mais compile-vérifié seulement** (nécessite audio/appareil pour l'exécution) : capture micro
   (AVAudioEngine) + sortie système (**Core Audio process taps** primaires, repli ScreenCaptureKit
   automatique) et transcription **SpeechAnalyzer réelle** —

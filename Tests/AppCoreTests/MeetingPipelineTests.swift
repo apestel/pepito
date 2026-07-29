@@ -101,3 +101,65 @@ final class FailingOnceProvider: AIProvider {
     #expect(result.summary == "OK")
     #expect(result.actions.isEmpty)
 }
+
+// MARK: - Projets et responsable « moi »
+
+@Test func pipelineAssignsProjectsAndResolvesSelfOwner() async throws {
+    let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "pepito-proj-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let migration = Project(name: "Migration SI")
+    let recrutement = Project(name: "Recrutement")
+    let provider = PipelineScriptedProvider([
+        #"""
+        {"summary":"OK","actions":[
+          {"title":"Chiffrer les postes","project":"migration si","owner":"moi",
+           "children":[{"title":"Demander les devis","project":"Recrutement","owner":"Marc"}]},
+          {"title":"Sans projet nommé","project":null,"owner":"Claire"},
+          {"title":"Projet inconnu","project":"Projet Fantôme","owner":null}
+        ]}
+        """#,
+    ])
+    let pipeline = MeetingPipeline(provider: provider, vault: Vault(root: tmp))
+
+    // La réunion porte « Recrutement » : c'est le repli quand le modèle ne nomme rien de connu.
+    let result = try await pipeline.process(
+        meeting: Meeting(title: "Comité", projectID: recrutement.id, folderPath: "f"),
+        transcript: "t",
+        projects: [migration, recrutement],
+        userName: "Antoine Pestel")
+
+    let byTitle = Dictionary(uniqueKeysWithValues: result.actions.map { ($0.title, $0) })
+    // Le nom renvoyé par le modèle est rapproché sans tenir compte de la casse.
+    #expect(byTitle["Chiffrer les postes"]?.projectID == migration.id)
+    // Une sous-tâche peut relever d'un autre projet que son parent.
+    #expect(byTitle["Demander les devis"]?.projectID == recrutement.id)
+    // project null ⇒ projet de la réunion ; projet inconnu ⇒ idem, jamais de projet inventé.
+    #expect(byTitle["Sans projet nommé"]?.projectID == recrutement.id)
+    #expect(byTitle["Projet inconnu"]?.projectID == recrutement.id)
+
+    // « moi » devient un vrai nom, sinon l'action ne serait pas classée « à moi ».
+    #expect(byTitle["Chiffrer les postes"]?.owner == "Antoine Pestel")
+    #expect(byTitle["Chiffrer les postes"]?.resolvedInvolvement(me: "Antoine Pestel", team: []) == .own)
+    #expect(byTitle["Demander les devis"]?.owner == "Marc")
+    #expect(byTitle["Projet inconnu"]?.owner == nil)
+}
+
+@Test func projectsBlockOnlyListsOpenProjects() {
+    let open = Project(name: "Migration SI")
+    let closed = Project(name: "Ancien chantier", status: .closed)
+    let block = MeetingPipeline.projectsBlock([open, closed], current: open)
+    #expect(block.contains("Migration SI"))
+    #expect(block.contains("Ancien chantier") == false)
+    // Aucun projet ouvert : rien à dire au modèle, pas de bloc vide dans le prompt.
+    #expect(MeetingPipeline.projectsBlock([closed], current: nil).isEmpty)
+}
+
+@Test func identityBlockIsEmptyWithoutAName() {
+    #expect(MeetingPipeline.identityBlock("  ").isEmpty)
+    #expect(MeetingPipeline.identityBlock("Antoine").contains("Antoine"))
+    // Sans nom configuré, on ne réécrit pas le responsable.
+    #expect(MeetingPipeline.resolveOwner("moi", userName: "") == "moi")
+    #expect(MeetingPipeline.resolveOwner("Moi", userName: "Antoine") == "Antoine")
+    #expect(MeetingPipeline.resolveOwner("  ", userName: "Antoine") == nil)
+}

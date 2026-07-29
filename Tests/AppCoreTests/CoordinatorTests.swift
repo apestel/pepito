@@ -246,3 +246,41 @@ final class MockCapturer: AudioCapturing {
     await coordinator.stopRecording()
     #expect(coordinator.isSamplingLevels == false)
 }
+
+// MARK: - Pré-brief ciblé par projet
+
+@MainActor
+@Test func preBriefRanksProjectMatchesFirst() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appending(path: "pepito-prebrief-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let app = MeetingCoordinator(
+        settingsStore: SettingsStore(fileURL: root.appending(path: "settings.json")),
+        database: Database(path: root.appending(path: "pepito.db")),
+        tokenStore: InMemoryTokenStore(),
+        recordingsRoot: root.appending(path: "recordings"),
+        capture: MockCapturer())
+    app.settings.userName = "Antoine"
+    app.settings.teamMembers = ["Marc"]
+
+    let migration = Project(name: "Migration SI")
+    app.saveProject(migration)
+
+    let past = Meeting(id: UUID(), title: "Réunion passée", participants: ["Claire"], folderPath: "p")
+    app.meetings = [past]
+
+    let onProject = ActionItem(meetingID: past.id, projectID: migration.id, title: "Sur le projet", owner: "Zoé")
+    let byOwner = ActionItem(meetingID: past.id, title: "Par le responsable", owner: "Claire")
+    let noise = ActionItem(title: "Hors sujet", owner: "Inconnu")
+    app.actions = [noise, byOwner, onProject]
+
+    let meeting = Meeting(title: "Point", participants: ["Claire"], projectID: migration.id, folderPath: "f")
+    let brief = app.relevantOpenActions(for: meeting)
+
+    // Le projet prime sur le recoupement de participants ; « pour info » (owner inconnu) sort.
+    #expect(brief.map(\.title) == ["Sur le projet", "Par le responsable"])
+
+    // Réunion sans projet ni participants : plutôt que rien, on garde la liste triée par urgence.
+    let blind = app.relevantOpenActions(for: Meeting(title: "Impromptue", folderPath: "f"))
+    #expect(blind.count == 3)
+}

@@ -38,9 +38,20 @@ public final class Database {
         if !existing.contains("user_notes") {
             exec("ALTER TABLE meeting ADD COLUMN user_notes TEXT NOT NULL DEFAULT '';")
         }
+        if !existing.contains("project_id") {
+            exec("ALTER TABLE meeting ADD COLUMN project_id TEXT REFERENCES project(id) ON DELETE SET NULL;")
+        }
         let actionColumns = Set(query("PRAGMA table_info(action)") { self.colText($0, 1) ?? "" })
         if !actionColumns.contains("source_url") {
             exec("ALTER TABLE action ADD COLUMN source_url TEXT;")
+        }
+        if !actionColumns.contains("project_id") {
+            exec("ALTER TABLE action ADD COLUMN project_id TEXT REFERENCES project(id) ON DELETE SET NULL;")
+        }
+        // NULL = implication déduite du responsable ; la colonne n'est écrite qu'en cas de surcharge
+        // manuelle. Les lignes existantes se classent donc toutes seules.
+        if !actionColumns.contains("involvement") {
+            exec("ALTER TABLE action ADD COLUMN involvement TEXT;")
         }
     }
 
@@ -54,6 +65,9 @@ public final class Database {
     }
 
     static let schema = """
+    CREATE TABLE IF NOT EXISTS project(
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+      color TEXT, owner TEXT, created_at REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS meeting(
       id TEXT PRIMARY KEY, title TEXT NOT NULL,
       started_at REAL NOT NULL, ended_at REAL,
@@ -71,6 +85,8 @@ public final class Database {
       parent_id TEXT, title TEXT NOT NULL, details TEXT NOT NULL DEFAULT '',
       owner TEXT, due REAL, status TEXT NOT NULL, priority INTEGER NOT NULL,
       created_at REAL NOT NULL, source_url TEXT);
+    -- Supprimer un projet ne doit jamais supprimer d'actions : SET NULL, pas CASCADE.
+    -- (project_id / involvement sont ajoutés par migrate() sur les bases existantes.)
     CREATE TABLE IF NOT EXISTS mail_item(
       review_date TEXT NOT NULL, idx INTEGER NOT NULL,
       subject TEXT NOT NULL, sender TEXT NOT NULL, url TEXT NOT NULL,
@@ -86,7 +102,7 @@ public final class Database {
     /// Toutes les réunions, plus récente en tête, tags inclus.
     public func loadAll() -> [Meeting] {
         var meetings = query(
-            "SELECT id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error,participants,user_notes"
+            "SELECT id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error,participants,user_notes,project_id"
             + " FROM meeting ORDER BY started_at DESC") { Self.buildMeeting($0) }
             .compactMap { $0 }
         for i in meetings.indices { meetings[i].tags = tags(for: meetings[i].id) }
@@ -96,13 +112,14 @@ public final class Database {
     /// Insère ou met à jour une réunion (par `id`) et réécrit ses liaisons de tags.
     public func save(_ m: Meeting) {
         run("""
-            INSERT INTO meeting(id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error,updated_at,participants,user_notes)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO meeting(id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error,updated_at,participants,user_notes,project_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET title=excluded.title, started_at=excluded.started_at,
               ended_at=excluded.ended_at, status=excluded.status, folder_path=excluded.folder_path,
               session_dir=excluded.session_dir, transcript=excluded.transcript,
               last_error=excluded.last_error, updated_at=excluded.updated_at,
-              participants=excluded.participants, user_notes=excluded.user_notes
+              participants=excluded.participants, user_notes=excluded.user_notes,
+              project_id=excluded.project_id
             """) { s in
             self.text(s, 1, m.id.uuidString); self.text(s, 2, m.title)
             self.real(s, 3, m.startedAt.timeIntervalSince1970)
@@ -111,6 +128,7 @@ public final class Database {
             self.text(s, 7, m.sessionDirPath); self.text(s, 8, m.transcript)
             self.text(s, 9, m.lastError); self.real(s, 10, Date().timeIntervalSince1970)
             self.text(s, 11, Self.encodeStrings(m.participants)); self.text(s, 12, m.userNotes)
+            self.text(s, 13, m.projectID?.uuidString)
         }
         addTags(m.tags)
         run("DELETE FROM meeting_tag WHERE meeting_id=?") { self.text($0, 1, m.id.uuidString) }
@@ -145,14 +163,17 @@ public final class Database {
 
     /// Insère/met à jour un lot d'actions (par `id`). Le statut existant est **préservé** en cas de
     /// re-traitement (on n'écrase pas un suivi manuel), le reste est rafraîchi.
+    /// `involvement` est préservé pour la même raison : une surcharge manuelle survit à une relance
+    /// du pipeline. `updateAction` la réécrit explicitement (comme pour le statut).
     public func saveActions(_ items: [ActionItem]) {
         for a in items {
             run("""
-                INSERT INTO action(id,meeting_id,parent_id,title,details,owner,due,status,priority,created_at,source_url)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO action(id,meeting_id,parent_id,title,details,owner,due,status,priority,created_at,source_url,project_id,involvement)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET meeting_id=excluded.meeting_id, parent_id=excluded.parent_id,
                   title=excluded.title, details=excluded.details, owner=excluded.owner,
-                  due=excluded.due, priority=excluded.priority, source_url=excluded.source_url
+                  due=excluded.due, priority=excluded.priority, source_url=excluded.source_url,
+                  project_id=excluded.project_id
                 """) { s in
                 self.text(s, 1, a.id.uuidString); self.text(s, 2, a.meetingID?.uuidString)
                 self.text(s, 3, a.parentID?.uuidString); self.text(s, 4, a.title)
@@ -160,7 +181,15 @@ public final class Database {
                 self.real(s, 7, a.dueDate?.timeIntervalSince1970)
                 self.text(s, 8, a.status.rawValue); self.int(s, 9, Int32(a.priority.rawValue))
                 self.real(s, 10, Date().timeIntervalSince1970); self.text(s, 11, a.sourceURL)
+                self.text(s, 12, a.projectID?.uuidString); self.text(s, 13, a.involvement?.rawValue)
             }
+        }
+    }
+
+    /// Pose ou retire la surcharge d'implication (`nil` = revenir à la déduction automatique).
+    public func updateInvolvement(_ id: UUID, _ involvement: Involvement?) {
+        run("UPDATE action SET involvement=? WHERE id=?") { s in
+            self.text(s, 1, involvement?.rawValue); self.text(s, 2, id.uuidString)
         }
     }
 
@@ -257,7 +286,8 @@ public final class Database {
     }
 
     private static let actionSelect =
-        "SELECT id,meeting_id,parent_id,title,details,owner,due,status,priority,source_url FROM action"
+        "SELECT id,meeting_id,parent_id,title,details,owner,due,status,priority,source_url,project_id,involvement"
+        + " FROM action"
 
     private static func buildAction(_ s: OpaquePointer?) -> ActionItem? {
         guard let idStr = column(s, 0), let id = UUID(uuidString: idStr),
@@ -267,11 +297,45 @@ public final class Database {
             id: id,
             parentID: column(s, 2).flatMap { UUID(uuidString: $0) },
             meetingID: column(s, 1).flatMap { UUID(uuidString: $0) },
+            projectID: column(s, 10).flatMap { UUID(uuidString: $0) },
             title: title, details: column(s, 4) ?? "", owner: column(s, 5),
             dueDate: columnDouble(s, 6).map { Date(timeIntervalSince1970: $0) },
             status: status,
             priority: ActionPriority(rawValue: Int(columnInt(s, 8))) ?? .medium,
+            involvement: column(s, 11).flatMap { Involvement(rawValue: $0) },
             sourceURL: column(s, 9))
+    }
+
+    // MARK: - Projets
+
+    /// Tous les projets, actifs d'abord puis par nom.
+    public func loadProjects() -> [Project] {
+        query("SELECT id,name,status,color,owner FROM project ORDER BY status, name") { s -> Project? in
+            guard let idStr = Self.column(s, 0), let id = UUID(uuidString: idStr),
+                  let name = Self.column(s, 1) else { return nil }
+            return Project(
+                id: id, name: name,
+                status: Self.column(s, 2).flatMap { ProjectStatus(rawValue: $0) } ?? .active,
+                color: Self.column(s, 3), owner: Self.column(s, 4))
+        }.compactMap { $0 }
+    }
+
+    public func saveProject(_ p: Project) {
+        run("""
+            INSERT INTO project(id,name,status,color,owner,created_at) VALUES(?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET name=excluded.name, status=excluded.status,
+              color=excluded.color, owner=excluded.owner
+            """) { s in
+            self.text(s, 1, p.id.uuidString); self.text(s, 2, p.name)
+            self.text(s, 3, p.status.rawValue); self.text(s, 4, p.color)
+            self.text(s, 5, p.owner); self.real(s, 6, Date().timeIntervalSince1970)
+        }
+    }
+
+    /// Supprime un projet. Ses actions et réunions restent, `project_id` repasse à NULL par le
+    /// `ON DELETE SET NULL` du schéma.
+    public func deleteProject(_ id: UUID) {
+        run("DELETE FROM project WHERE id=?") { self.text($0, 1, id.uuidString) }
     }
 
     private func tags(for id: UUID) -> [String] {
@@ -290,7 +354,9 @@ public final class Database {
             startedAt: Date(timeIntervalSince1970: started),
             endedAt: columnDouble(s, 3).map { Date(timeIntervalSince1970: $0) },
             participants: decodeStrings(column(s, 9)),
-            status: status, folderPath: folder,
+            status: status,
+            projectID: column(s, 11).flatMap { UUID(uuidString: $0) },
+            folderPath: folder,
             sessionDirPath: column(s, 6), transcript: column(s, 7),
             userNotes: column(s, 10) ?? "", lastError: column(s, 8))
     }

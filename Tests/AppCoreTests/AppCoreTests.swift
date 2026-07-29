@@ -301,3 +301,105 @@ import ActionKit
     aec.blockLength = n
     #expect(lastBlockResidual(aec.cancel(mic: mic, reference: x, maxLag: 600)) > 0.5 * echo)
 }
+
+// MARK: - Projets et implication (migration incluse)
+
+@Test func projectsAndInvolvementPersist() {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "pepito-projects-\(UUID().uuidString)")
+    let dbPath = dir.appending(path: "pepito.db")
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let project = Project(name: "Migration SI", color: "blue", owner: "Alice")
+    let meetingID = UUID()
+    let action = ActionItem(meetingID: meetingID, projectID: project.id, title: "Chiffrer les postes")
+
+    do {
+        let db = Database(path: dbPath)
+        db.saveProject(project)
+        db.save(Meeting(id: meetingID, title: "Sync", projectID: project.id, folderPath: "f"))
+        db.saveActions([action])
+        db.updateInvolvement(action.id, .follow)
+    }
+
+    let db = Database(path: dbPath)
+    #expect(db.loadProjects().map(\.name) == ["Migration SI"])
+    #expect(db.loadProjects().first?.color == "blue")
+    #expect(db.loadAll().first?.projectID == project.id)
+    let reloaded = db.loadAllActions().first
+    #expect(reloaded?.projectID == project.id)
+    #expect(reloaded?.involvement == .follow)
+
+    // Re-traitement du pipeline : la surcharge d'implication survit, comme le statut.
+    db.saveActions([action])
+    #expect(db.loadAllActions().first?.involvement == .follow)
+
+    // Supprimer un projet ne supprime pas ses actions : project_id repasse simplement à NULL.
+    db.deleteProject(project.id)
+    #expect(db.loadProjects().isEmpty)
+    #expect(db.loadAllActions().count == 1)
+    #expect(db.loadAllActions().first?.projectID == nil)
+    #expect(db.loadAll().first?.projectID == nil)
+}
+
+@Test func migrationAddsColumnsToAPreExistingDatabase() {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "pepito-migrate-\(UUID().uuidString)")
+    let dbPath = dir.appending(path: "pepito.db")
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    // Base à l'ancien schéma (sans project/involvement), telle qu'une install existante.
+    let legacy = ActionItem(title: "Action héritée", owner: "Alice")
+    let fixture = LegacyDatabaseFixture(path: dbPath)
+    fixture.insertLegacyAction(id: legacy.id, title: legacy.title, owner: "Alice")
+    fixture.close()
+
+    // L'ouverture normale migre : l'action historique remonte, non classée et sans surcharge.
+    let db = Database(path: dbPath)
+    let all = db.loadAllActions()
+    #expect(all.count == 1)
+    #expect(all.first?.title == "Action héritée")
+    #expect(all.first?.projectID == nil)
+    #expect(all.first?.involvement == nil)
+    // involvement nil ⇒ classée par déduction : Alice est dans mon équipe.
+    #expect(all.first?.resolvedInvolvement(me: "Antoine", team: ["Alice"]) == .follow)
+}
+
+// MARK: - Regroupement des réunions récurrentes
+
+@Test func seriesKeyGroupsOccurrencesOfTheSameMeeting() {
+    // Casse, accents, ponctuation et numéro d'occurrence ne doivent pas séparer une série.
+    #expect(Meeting.seriesKey("Weekly Produit") == Meeting.seriesKey("weekly  produit"))
+    #expect(Meeting.seriesKey("Weekly Produit #12") == Meeting.seriesKey("Weekly Produit"))
+    #expect(Meeting.seriesKey("Comité 2026-07-28") == Meeting.seriesKey("Comité"))
+    #expect(Meeting.seriesKey("Réunion d'équipe") == "reunion d equipe")
+    // Deux réunions différentes restent séparées.
+    #expect(Meeting.seriesKey("Weekly Produit") != Meeting.seriesKey("Weekly Tech"))
+}
+
+@MainActor
+@Test func meetingSeriesKeepsChronologicalOrder() {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "pepito-series-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let app = MeetingCoordinator(
+        settingsStore: SettingsStore(fileURL: dir.appending(path: "settings.json")),
+        database: Database(path: dir.appending(path: "pepito.db")),
+        tokenStore: InMemoryTokenStore())
+
+    func meeting(_ title: String, _ day: Int) -> Meeting {
+        Meeting(title: title, startedAt: Date(timeIntervalSince1970: Double(day) * 86_400), folderPath: "f")
+    }
+    // Ordre de `Database.loadAll()` : started_at DESC.
+    app.meetings = [
+        meeting("Weekly Produit", 30),
+        meeting("Point client Acme", 29),
+        meeting("Weekly Produit #2", 23),
+        meeting("weekly produit", 16),
+    ]
+
+    let series = app.meetingSeries
+    #expect(series.map(\.isRecurring) == [true, false])
+    // Un groupe se classe à son occurrence la plus récente, et son contenu reste antéchronologique.
+    #expect(series[0].meetings.count == 3)
+    #expect(series[0].title == "Weekly Produit")
+    #expect(series[0].meetings.map(\.startedAt) == series[0].meetings.map(\.startedAt).sorted(by: >))
+    #expect(series[1].meetings.map(\.title) == ["Point client Acme"])
+}

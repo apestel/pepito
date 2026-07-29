@@ -209,6 +209,36 @@ hiérarchisé validable par l'utilisateur.
 
 ---
 
+## Phase 7 bis — Structuration des tâches — 🟢 IMPLÉMENTÉE
+
+**Objectif** : rendre le suivi actionnable — savoir d'un coup d'œil ce que je porte, ce que je
+relance, et ce qui n'est là que pour information, projet par projet.
+
+> Fait : entité **`Project`** (table dédiée, actif/clos, couleur, référent, gérée dans les
+> Réglages) ; `ActionItem.projectID` + **`involvement`** (own / follow / info) *nullable = déduit*
+> de `owner` via `Settings.userName` / `teamMembers` ; `DashboardView` en trois sections
+> d'implication sous-groupées par projet, retards dédoublonnés, filtre projet ; `ActionRow` montre
+> projet, `details` et **réunion d'origine cliquable** ; hiérarchie enfin rendue
+> (`ActionHierarchy.flattened`) ; **création manuelle** d'action (suivi, fiche réunion, barre de
+> menu) ; projet choisi **dès le démarrage** de la réunion (rapproché du titre calendrier) +
+> tags en direct ; **pré-brief scoré** (projet > responsable > participants, pénalité « pour
+> info ») ; le pipeline classe les actions dans les projets existants et remplace « moi » par le
+> vrai nom ; réunions **récurrentes repliables** dans la barre latérale (`Meeting.seriesKey`).
+> Migration vérifiée sur base réelle (64 actions, 5 réunions préservées).
+
+- [x] `Project` + `Involvement`, migrations additives, `resolvedInvolvement`.
+- [x] Suivi par implication × projet, retards non répétés, contexte sur chaque ligne.
+- [x] Saisie manuelle d'action + éditeur enrichi (projet, implication, détail).
+- [x] Projet & tags dès le démarrage ; pré-brief ciblé ; héritage du projet par les actions.
+- [x] Regroupement des réunions récurrentes (titre normalisé).
+- [ ] Relances/notifications sur les actions « À suivre » — à faire une fois la classification
+      éprouvée à l'usage.
+- [ ] Fusion/renommage en masse de projets ; `series_key` explicite issue d'`EKEvent`.
+
+**Fait quand** : ~~le suivi distingue ce que je porte de ce que je relance, projet par projet.~~ ✅
+
+---
+
 ## Phase 8 — Durcissement & distribution (semaine 12)
 
 **Objectif** : app livrable.
