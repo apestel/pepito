@@ -26,7 +26,6 @@ jobs:
             fi
             tail -12 /tmp/out.txt
           }
-          for t in VaultKitTests ActionKitTests AIKitTests MailKitTests CaptureKitTests \
-                   TranscriptionKitTests PepitoTests AppCoreTests; do
-            probe 75 "$t" swift test --filter "$t"
-          done
+          probe 120 "AppCoreTests en série (le dernier « started » = le coupable)" \
+                swift test --no-parallel --filter AppCoreTests
+          probe 75  "TranscriptionKitTests après correctif" swift test --filter TranscriptionKitTests

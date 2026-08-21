@@ -23,6 +23,10 @@ public struct SpeechAnalyzerTranscriber: Transcriber {
     }
 
     public func transcribeFile(at url: URL, locale: Locale) async throws -> [TranscriptSegment] {
+        // Ouvrir le fichier d'abord : inutile de demander l'autorisation Speech (une alerte système)
+        // pour échouer ensuite sur un fichier illisible.
+        let file = try AVAudioFile(forReading: url)
+
         try await Self.requestAuthorization(log: step)
         step("Autorisation Speech OK, préparation…")
 
@@ -35,7 +39,6 @@ public struct SpeechAnalyzerTranscriber: Transcriber {
         try await Self.ensureModelInstalled(for: transcriber, locale: locale, log: step)
 
         let analyzer = SpeechAnalyzer(modules: [transcriber])
-        let file = try AVAudioFile(forReading: url)
 
         // Collecte concurrente des résultats.
         let resultsTask = Task { () throws -> [TranscriptSegment] in
