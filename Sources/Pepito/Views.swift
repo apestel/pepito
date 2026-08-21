@@ -1603,9 +1603,9 @@ struct AdminView: View {
                 .help("Stratégie anti-bleed micro. Casque = aucun bleed quel que soit le mode.")
 
                 Toggle(isOn: $app.settings.flags.useOnDeviceAI) {
-                    InfoLabel("IA on-device", "À venir : utilise un modèle génératif local (100 % privé, aucune donnée envoyée sur le réseau) au lieu de l'endpoint distant. Tant que non implémenté, l'endpoint OpenAI-compatible est utilisé.")
+                    InfoLabel("IA on-device", "À venir avec macOS 27 : utilise un modèle génératif Apple (100 % privé, aucune donnée envoyée sur le réseau) au lieu de l'endpoint distant. Reporté car la fenêtre de contexte on-device de macOS 26 est de 4096 tokens — soit 4 à 7 minutes de transcript par appel, insuffisant pour une réunion. Tant que non implémenté, l'endpoint OpenAI-compatible est utilisé.")
                 }
-                .help("À venir — analyse 100 % locale, sans envoi réseau.")
+                .help("À venir avec macOS 27 — analyse locale, sans envoi réseau.")
 
                 TextField("Langue de transcription", text: $app.settings.transcriptionLocaleIdentifier)
                     .help("Code de langue BCP-47 pour la transcription (ex. fr-FR, en-US).")

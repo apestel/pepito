@@ -128,7 +128,14 @@ charges initial.
 - [ ] Token en **Keychain** ; « Tester la connexion » ; gestion des erreurs/timeouts/retries.
 - [ ] Abstraction provider (OpenAI, Azure, Ollama, vLLM, OpenRouter, LM Studio).
 - [ ] Comptage de tokens + chunking / map-reduce pour longs transcripts.
-- [ ] 💡 Backend on-device via **Foundation Models** comme provider alternatif (mode 100 % privé).
+- [ ] ⏸️ Backend on-device via **Foundation Models** — **reporté à macOS 27** (2026-07-29).
+      Aujourd'hui `SystemLanguageModel.contextSize` vaut **4096 tokens** (entrée + sortie) : après
+      le prompt système et le JSON attendu, il reste 4 à 7 min de transcript par appel, soit ~10
+      passes de condensation pour une réunion d'une heure, produites par un modèle de 3 Md.
+      macOS 27 apporte `PrivateCloudComputeLanguageModel` à **32 000 tokens** sans clé d'API :
+      la même réunion passe en **une seule fois**. Tout se branche derrière l'unique fabrique
+      `AppCore.makeProvider(settings:token:)` ; `TokenEstimator`/`TranscriptChunker` sont prêts
+      si un fold reste nécessaire.
 - [ ] 💡 Cache des réponses + estimation de coût affichée.
 
 **Fait quand** : un prompt libre + transcript renvoie une réponse streamée depuis l'endpoint réglé.
