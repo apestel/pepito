@@ -15,6 +15,7 @@ concurrency:
 jobs:
   build-test:
     runs-on: macos-26
+    timeout-minutes: 45   # une minute macOS coûte ×10 : jamais de job qui traîne
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain

@@ -47,5 +47,9 @@ read -r ANSWER
 echo "▸ Tag et push"
 git commit -am "release: v$V"
 git tag -a "v$V" -m "Pépito v$V"
-git push --follow-tags
+# Deux pushs distincts, jamais --follow-tags : quand le commit et le tag partent ensemble,
+# GitHub traite l'événement de tag avant d'avoir enregistré un workflow ajouté par ce même
+# push, et le workflow Release ne se déclenche pas.
+git push
+git push origin "v$V"
 echo "✅ v$V poussé. La release GitHub (DMG + notes) est construite par le workflow Release."

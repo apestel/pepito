@@ -1,0 +1,36 @@
+# Temporaire : capture la pile du process de test bloqué sur le runner. À supprimer une fois
+# la cause identifiée.
+name: Debug hang
+on: workflow_dispatch
+
+jobs:
+  debug:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Session graphique ?
+        run: |
+          launchctl managername || true
+          ls /tmp/.X11-unix 2>/dev/null || true
+          echo "user: $(id -un)  console: $(stat -f%Su /dev/console 2>/dev/null)"
+      - name: Build seul
+        run: swift build --build-tests
+      - name: Test avec capture de pile
+        run: |
+          set +e
+          swift test 2>&1 &
+          PID=$!
+          sleep 90
+          if kill -0 $PID 2>/dev/null; then
+            echo "=== toujours vivant après 90 s, échantillonnage ==="
+            ps -Ao pid,comm | grep -i "xctest\|swiftpm-testing\|PepitoPackageTests" | grep -v grep
+            for p in $(pgrep -f "swiftpm-testing-helper|PepitoPackageTests|xctest"); do
+              echo "----- sample $p -----"
+              sample $p 3 -file /tmp/hang-$p.txt >/dev/null 2>&1
+              sed -n '1,120p' /tmp/hang-$p.txt
+            done
+            kill -9 $PID
+            exit 1
+          fi
+          wait $PID
