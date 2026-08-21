@@ -26,9 +26,7 @@ jobs:
             fi
             tail -12 /tmp/out.txt
           }
-          probe 60  "list-tests"                swift test --list-tests
-          probe 90  "un seul module pur"        swift test --filter VaultKitTests
-          probe 90  "module liant l'app"        swift test --filter HeatmapTests
-          probe 90  "sans parallélisme"         swift test --no-parallel --filter VaultKitTests
-          echo "═══ exécution directe du bundle"
-          find .build -name "*.xctest" -o -name "PepitoPackageTests" -type f | head -5
+          for t in VaultKitTests ActionKitTests AIKitTests MailKitTests CaptureKitTests \
+                   TranscriptionKitTests PepitoTests AppCoreTests; do
+            probe 75 "$t" swift test --filter "$t"
+          done
