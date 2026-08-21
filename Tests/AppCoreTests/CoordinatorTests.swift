@@ -34,6 +34,14 @@ final class MockCapturer: AudioCapturing {
     func stop() async throws { isRecording = false }
 }
 
+/// Sans injection, le coordinateur prend `EventKitCalendar` : sur un runner CI la demande d'accès
+/// TCC n'obtient jamais de réponse et le test se bloque indéfiniment.
+@MainActor
+final class MockCalendar: CalendarProviding {
+    func requestAccess() async -> Bool { false }
+    func currentOrImminentEvent(now: Date) async -> CalEvent? { nil }
+}
+
 @MainActor
 @Test func coordinatorRunsCaptureTranscriptionAndPipeline() async throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -49,6 +57,7 @@ final class MockCapturer: AudioCapturing {
         tokenStore: InMemoryTokenStore(),
         recordingsRoot: root.appending(path: "recordings"),
         capture: MockCapturer(),
+        calendar: MockCalendar(),
         transcriberFactory: {
             MockTranscriber(segments: [
                 TranscriptSegment(start: 0, end: 2, text: "Il faut préparer le budget."),
@@ -150,6 +159,7 @@ final class MockCapturer: AudioCapturing {
         tokenStore: InMemoryTokenStore(),
         recordingsRoot: root.appending(path: "recordings"),
         capture: MockCapturer(),
+        calendar: MockCalendar(),
         transcriberFactory: { MockTranscriber(segments: []) },
         liveTranscriberFactory: { source in source == .microphone ? mockMicLive : mockSystemLive },
         providerFactory: { _, _ in provider }
@@ -191,7 +201,8 @@ final class MockCapturer: AudioCapturing {
         database: Database(path: root.appending(path: "pepito.db")),
         tokenStore: InMemoryTokenStore(),
         recordingsRoot: root.appending(path: "recordings"),
-        capture: MockCapturer()
+        capture: MockCapturer(),
+        calendar: MockCalendar()
     )
 
     let cap = MeetingCoordinator.liveDisplaySegmentCap
@@ -221,6 +232,7 @@ final class MockCapturer: AudioCapturing {
         tokenStore: InMemoryTokenStore(),
         recordingsRoot: root.appending(path: "recordings"),
         capture: MockCapturer(),
+        calendar: MockCalendar(),
         transcriberFactory: { MockTranscriber(segments: []) },
         liveTranscriberFactory: { _ in MockLiveTranscriber() }
     )
@@ -259,7 +271,8 @@ final class MockCapturer: AudioCapturing {
         database: Database(path: root.appending(path: "pepito.db")),
         tokenStore: InMemoryTokenStore(),
         recordingsRoot: root.appending(path: "recordings"),
-        capture: MockCapturer())
+        capture: MockCapturer(),
+        calendar: MockCalendar())
     app.settings.userName = "Antoine"
     app.settings.teamMembers = ["Marc"]
 
@@ -301,7 +314,8 @@ final class MockCapturer: AudioCapturing {
         database: database,
         tokenStore: InMemoryTokenStore(),
         recordingsRoot: root.appending(path: "recordings"),
-        capture: MockCapturer())
+        capture: MockCapturer(),
+        calendar: MockCalendar())
 
     let projet = Project(name: "Migration SI")
     app.saveProject(projet)

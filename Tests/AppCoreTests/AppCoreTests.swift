@@ -394,7 +394,8 @@ import ActionKit
     let app = MeetingCoordinator(
         settingsStore: SettingsStore(fileURL: dir.appending(path: "settings.json")),
         database: Database(path: dir.appending(path: "pepito.db")),
-        tokenStore: InMemoryTokenStore())
+        tokenStore: InMemoryTokenStore(),
+        calendar: MockCalendar())
 
     func meeting(_ title: String, _ day: Int) -> Meeting {
         Meeting(title: title, startedAt: Date(timeIntervalSince1970: Double(day) * 86_400), folderPath: "f")
