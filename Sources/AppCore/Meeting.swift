@@ -94,7 +94,15 @@ public struct Meeting: Sendable, Identifiable, Codable, Equatable {
     ///
     /// ponytail: dérivée du titre, donc une réunion renommée quitte son groupe. Si ça gêne :
     /// colonne `series_key` alimentée par l'identifiant de série d'`EKEvent`.
-    public var seriesKey: String { Self.seriesKey(title) }
+    /// Un titre auto (« Réunion du 21 août 2026 à 14:32 ») ne forme jamais de série : sans lui,
+    /// deux réunions impromptues du même mois tomberaient dans le même groupe (les nombres sont
+    /// filtrés, le nom du mois non).
+    public var seriesKey: String {
+        title.hasPrefix(Self.autoTitlePrefix) ? id.uuidString : Self.seriesKey(title)
+    }
+
+    /// Préfixe du titre donné à une réunion démarrée hors événement calendrier.
+    public static let autoTitlePrefix = "Réunion du "
 
     public static func seriesKey(_ title: String) -> String {
         let folded = title.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)

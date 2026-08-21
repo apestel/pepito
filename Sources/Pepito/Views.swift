@@ -1247,7 +1247,13 @@ struct LiveTranscriptView: View {
             if !app.preBrief.isEmpty {
                 GroupBox {
                     Collapsible(title: "À suivre depuis les réunions précédentes (\(app.preBrief.count))") {
-                        ForEach(app.preBrief.prefix(8)) { a in
+                        // Ce qui vient des occurrences précédentes est en tête ; le reste
+                        // (même projet, mêmes participants) passe sous le trait.
+                        ForEach(Array(app.preBrief.prefix(8).enumerated()), id: \.element.id) { i, a in
+                            if i == app.preBriefSeriesCount, i > 0 {
+                                Divider().padding(.vertical, 4)
+                                Text("Autres sujets liés").font(.caption).foregroundStyle(.secondary)
+                            }
                             Text("• \(a.title)" + (a.owner.map { " (@\($0))" } ?? "")).font(.callout)
                         }
                     }

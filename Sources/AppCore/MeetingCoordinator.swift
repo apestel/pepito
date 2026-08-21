@@ -45,6 +45,10 @@ public final class MeetingCoordinator {
     /// calculées au démarrage d'un enregistrement (« la dernière fois, il restait à… »).
     public var preBrief: [ActionItem] = []
 
+    /// Nombre d'actions de tête du pré-brief issues des occurrences précédentes de la série (le
+    /// reste est rattaché par projet/participants). Sert au séparateur de l'encart live.
+    public private(set) var preBriefSeriesCount = 0
+
     /// Triage de la boîte mail : en cours, dernier bilan/erreur, historique des revues (plus
     /// récente en tête) et date de la dernière revue produite (pour la sélectionner dans l'UI).
     public var isTriagingMail: Bool = false
@@ -219,7 +223,7 @@ public final class MeetingCoordinator {
     public func startRecording() async {
         guard !isRecording else { return }
         let started = Date()
-        let tempTitle = "Réunion du " + Self.titleDateFormatter.string(from: started)
+        let tempTitle = Meeting.autoTitlePrefix + Self.titleDateFormatter.string(from: started)
         let sessionDir = recordingsRoot.appending(path: UUID().uuidString)
         processingPhase = nil
         draftNotes = ""   // notes propres à la nouvelle réunion
@@ -282,7 +286,7 @@ public final class MeetingCoordinator {
         )
         currentMeeting = meeting
         currentSessionDir = sessionDir
-        preBrief = relevantOpenActions(for: meeting)   // « la dernière fois, il restait à… »
+        refreshPreBrief(for: meeting)   // « la dernière fois, il restait à… »
         isRecording = true
         persist(meeting)   // résilience : la réunion existe en base dès le départ
         syncLevelSampling()   // ne démarre la FFT que si une vue affiche les niveaux
@@ -447,7 +451,7 @@ public final class MeetingCoordinator {
         meeting.projectID = id
         currentMeeting = meeting
         persist(meeting)
-        preBrief = relevantOpenActions(for: meeting)   // recentré sur le projet, tout de suite
+        refreshPreBrief(for: meeting)   // recentré sur le projet, tout de suite
     }
 
     public func toggleCurrentTag(_ tag: String) {
@@ -990,14 +994,33 @@ public final class MeetingCoordinator {
     /// le démarrage, avant le nommage), puis le responsable, puis le recoupement de participants.
     /// Sans projet renseigné on retrouve exactement l'ancien comportement.
     /// ponytail: overlap simple par nom ; pas de désambiguïsation d'identité (à affiner si besoin).
+    /// Occurrences précédentes de la même réunion récurrente : leur reste-à-faire est le rappel
+    /// le plus attendu au démarrage (« la dernière fois, il restait à… »).
+    func seriesMeetingIDs(for meeting: Meeting) -> Set<UUID> {
+        let key = meeting.seriesKey
+        // La réunion en cours est déjà en base (`persist`) quand on recalcule : elle s'exclut.
+        return Set(meetings.filter { $0.id != meeting.id && $0.seriesKey == key }.map(\.id))
+    }
+
+    /// Recalcule le pré-brief et la taille de son bloc « série » (préfixe contigu, la série
+    /// dominant le score).
+    private func refreshPreBrief(for meeting: Meeting) {
+        preBrief = relevantOpenActions(for: meeting)
+        let series = seriesMeetingIDs(for: meeting)
+        preBriefSeriesCount = preBrief.prefix { $0.meetingID.map(series.contains) == true }.count
+    }
+
     func relevantOpenActions(for meeting: Meeting) -> [ActionItem] {
         let participants = Set(meeting.participants.map { $0.lowercased() })
+        let series = seriesMeetingIDs(for: meeting)
         let byMeeting = Dictionary(
             meetings.map { ($0.id, Set($0.participants.map { $0.lowercased() })) },
             uniquingKeysWith: { a, _ in a })
 
         func score(_ a: ActionItem) -> Int {
             var score = 0
+            // 20 > 10+5+2 : ce qui vient de la série passe devant tout le reste.
+            if let mid = a.meetingID, series.contains(mid) { score += 20 }
             if let project = meeting.projectID, a.projectID == project { score += 10 }
             if let owner = a.owner, participants.contains(owner.lowercased()) { score += 5 }
             if let mid = a.meetingID, let p = byMeeting[mid], !p.isDisjoint(with: participants) { score += 2 }

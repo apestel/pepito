@@ -284,3 +284,43 @@ final class MockCapturer: AudioCapturing {
     let blind = app.relevantOpenActions(for: Meeting(title: "Impromptue", folderPath: "f"))
     #expect(blind.count == 3)
 }
+
+@MainActor
+@Test func preBriefPutsSeriesActionsFirst() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appending(path: "pepito-prebrief-serie-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    // Réunions passées en base : `setCurrentProject` persiste et recharge la liste.
+    let weekly = Meeting(title: "Weekly Produit", folderPath: "w")
+    let ailleurs = Meeting(title: "Autre sujet", folderPath: "a")
+    let database = Database(path: root.appending(path: "pepito.db"))
+    database.save(weekly)
+    database.save(ailleurs)
+    let app = MeetingCoordinator(
+        settingsStore: SettingsStore(fileURL: root.appending(path: "settings.json")),
+        database: database,
+        tokenStore: InMemoryTokenStore(),
+        recordingsRoot: root.appending(path: "recordings"),
+        capture: MockCapturer())
+
+    let projet = Project(name: "Migration SI")
+    app.saveProject(projet)
+
+    let restant = ActionItem(meetingID: weekly.id, title: "Reste du weekly", priority: .low)
+    let surProjet = ActionItem(meetingID: ailleurs.id, projectID: projet.id, title: "Sur le projet")
+    let bruit = ActionItem(meetingID: ailleurs.id, title: "Sans lien", priority: .high)
+    app.actions = [bruit, surProjet, restant]
+
+    // Occurrence suivante de la série, rattachée au même projet.
+    let suivante = Meeting(title: "Weekly Produit #12", projectID: projet.id, folderPath: "f")
+    let brief = app.relevantOpenActions(for: suivante)
+
+    // La série passe devant le projet malgré une priorité plus faible ; le bruit, même urgent, sort.
+    #expect(brief.map(\.title) == ["Reste du weekly", "Sur le projet"])
+
+    // Le séparateur de l'encart live : une seule action de tête vient de la série.
+    app.setPending(suivante)
+    app.setCurrentProject(projet.id)
+    #expect(app.preBrief.map(\.title) == ["Reste du weekly", "Sur le projet"])
+    #expect(app.preBriefSeriesCount == 1)
+}

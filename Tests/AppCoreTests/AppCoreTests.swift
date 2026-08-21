@@ -375,6 +375,18 @@ import ActionKit
     #expect(Meeting.seriesKey("Weekly Produit") != Meeting.seriesKey("Weekly Tech"))
 }
 
+@Test func autoTitledMeetingsNeverShareASeries() {
+    // Le nom du mois survit au filtre des nombres : sans garde, deux réunions impromptues d'août
+    // formeraient une « série ».
+    let a = Meeting(title: Meeting.autoTitlePrefix + "21 août 2026 à 14:32", folderPath: "a")
+    let b = Meeting(title: Meeting.autoTitlePrefix + "28 août 2026 à 09:00", folderPath: "b")
+    #expect(a.seriesKey != b.seriesKey)
+    // Une fois nommée, la réunion rejoint sa série.
+    var named = a
+    named.title = "Weekly Produit"
+    #expect(named.seriesKey == Meeting.seriesKey("Weekly Produit #13"))
+}
+
 @MainActor
 @Test func meetingSeriesKeepsChronologicalOrder() {
     let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "pepito-series-\(UUID().uuidString)")
