@@ -1,166 +1,91 @@
 # Changelog
 
-All notable changes to Pépito are documented here. Format loosely follows
-[Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0.
+Toutes les versions de Pépito sont documentées ici. Chaque version a deux sections :
+**Fonctionnel** (ce que l'utilisateur voit) et **Technique** (architecture, migrations, perf).
+Format inspiré de [Keep a Changelog](https://keepachangelog.com/) ; le projet est pré-1.0, où
+une version MINOR peut apporter une rupture (schéma SQLite, format du Vault).
 
 ## [Unreleased]
 
-### Added — killer features (calendar, notes, cross-meeting follow-up, export)
+## [0.5.0] - 2026-08-21
 
-- **Action item persistence** — action plans and their statuses are now stored in SQLite and
-  survive relaunch. Status is editable from a native menu on each action row (meeting detail +
-  follow-up dashboard). Action ids are embedded as HTML comments in `action-plan.md` so the
-  database stays reconstructible from the Vault.
-- **Calendar integration (EventKit)** — on recording start, the current/imminent event pre-fills
-  the meeting title and participants, and its agenda feeds the AI as `{{context}}`. New
-  `CalendarProviding` seam (mockable). Participants are now persisted.
-- **User notes + AI enrichment** — a notes editor in the live and naming windows; the AI
-  *completes* your notes from the transcript instead of regenerating (default prompt updated).
-  Exposed as `{{user_notes}}`.
-- **Cross-meeting follow-up** — a pre-brief banner surfaces open action items from past meetings
-  with the same participants; the AI can auto-resolve them via an `action_updates` block in its
-  JSON response (matched by id), updating statuses automatically. Open items are passed as
-  `{{open_actions}}`.
-- **External export** — export open action items to Apple Reminders (EventKit), plus a pure
-  Things URL-scheme builder. Summary/export lives in the follow-up dashboard.
+Première version distribuée. Le produit couvre la boucle complète : capturer une réunion, la
+transcrire, en extraire des actions, et les suivre dans le temps — plus le triage de la boîte mail.
 
-### Added — native mail triage
+### Fonctionnel
 
-- **`MailKit`** — new Kit: Mail.app extraction over AppleScript with an in-house MIME decoder
-  (raw `source` instead of Mail's slow `content`, ~5× faster), thread grouping by normalised
-  subject, compact digest (one entry per conversation) and deterministic Markdown rendering of the
-  review. Ported from the `mail-triage` skill, self-tests included.
-- **`MailPipeline`** — single-pass JSON triage mirroring `MeetingPipeline`: the digest goes to the
-  AI, which returns bucket/importance/action/deadline per conversation; the app renders
-  `mails/revue-<date>.md` into the Vault and creates the action items itself.
-- **Unified backlog** — Répondre/Décider/Suivre items become regular `ActionItem`s (no
-  `meetingID`), so they show up in the follow-up dashboard, the overdue list and the Reminders
-  export alongside meeting actions. Action ids are derived from the thread's `Message-ID`
-  (SHA-256), so re-running a triage updates instead of duplicating and preserves manual statuses.
-- **UI** — a "Mails" section in the sidebar, one row per review (date, 🔴 and ⚑ counts), with the
-  "Trier mes mails" trigger (today / last 7 days) in its header and live progress. The detail pane
-  is native: collapsible 🔴/🟠/🟢 sections, one card per conversation (importance, deadline, why,
-  summary), ⚪ grouped by sender, an envelope button opening the thread in Mail, and the action it
-  produced editable right inside the card. Reviews are kept in SQLite (`mail_item`), so the
-  history survives relaunch and re-triaging the same day replaces its row instead of stacking.
-  An envelope button also appears on mail-born actions in the follow-up dashboard, and the admin
-  screen gained a "Triage des mails" section (period, cap, prompt).
+- **Enregistrement et transcription** — capture simultanée du micro et de la sortie audio système
+  (taps Core Audio, repli ScreenCaptureKit), transcription on-device via SpeechAnalyzer, en direct
+  pendant la réunion puis finalisée à l'arrêt.
+- **Analyse IA** — à la fin de la réunion, résumé, décisions et plan d'action hiérarchisé, rangés
+  en Markdown dans le Vault. L'IA *complète* vos notes au lieu de les régénérer.
+- **Calendrier** — l'événement en cours pré-remplit titre, participants et contexte dès le
+  démarrage de l'enregistrement.
+- **Projets** — les actions et les réunions se rattachent à un projet (actif/clos, couleur,
+  référent). Le projet est choisi au démarrage, rapproché du titre de l'événement calendrier.
+- **Implication** — chaque action est classée *à faire soi-même* / *à suivre* / *pour info*,
+  déduite du responsable via votre nom et votre équipe (Réglages). Corriger l'équipe reclasse tout
+  l'historique ; une correction manuelle, elle, ne se fait jamais écraser.
+- **Suivi** — tableau de bord organisé par implication puis par projet, sous-tâches indentées,
+  retards signalés une seule fois, création manuelle d'action, export vers Rappels (et Things).
+- **Pré-brief** — au démarrage d'une réunion récurrente, les actions restées ouvertes aux
+  occurrences précédentes remontent en tête ; l'IA peut les clore d'elle-même en fin de réunion.
+- **Triage mail** — revue de la boîte Mail.app sur une période choisie (jour ou intervalle), en
+  lecture seule : conversations classées par urgence, actions extraites dans le même backlog que
+  les réunions. Re-trier ne duplique rien et préserve vos statuts.
+- **Résumé éditable** — double-clic sur le corps d'un résumé pour l'éditer ; le Vault reste la
+  source de vérité.
+- **Administration** — endpoint IA OpenAI-compatible (token en Keychain), dossier Vault, prompts
+  agentic et mail, projets, équipe, options de capture.
 
-Read-only by design: Pépito never modifies, flags or sends mail. Only the digest (metadata +
-300-character preview per conversation) reaches the AI endpoint — never full message bodies — and
-mail content never lands in the logs.
+### Technique
 
-### Fixed — offline AEC could silently discard the microphone transcript
+- **Modules** : `CaptureKit`, `TranscriptionKit`, `AIKit`, `VaultKit`, `ActionKit`, `MailKit`,
+  `AppCore`, app SwiftUI. 111 tests (swift-testing), `swift build` et `swift test` sans warning.
+- **Persistance** : SQLite, migrations additives et idempotentes (`PRAGMA table_info` +
+  `ALTER TABLE`), sans numéro de version. Tables `action`, `mail_item`, `project` ; colonnes
+  `participants`, `user_notes`, `source_url`, `project_id`, `involvement`. Migration vérifiée sur
+  base réelle : 64 actions et 5 réunions préservées.
+- **Ce qu'un humain a édité survit au pipeline** : `status` et `involvement` sont exclus du
+  `DO UPDATE` des upserts. `involvement` nullable = déduit, d'où un reclassement de l'historique
+  sans backfill.
+- **Identité des revues mail** : `MailPeriod` (jours calendaires inclusifs) remplace `days: Int`.
+  Sa clé (`2026-07-27` ou `2026-07-21_2026-07-27`) sert de clé SQLite, de nom de document Vault et
+  de sélection dans la barre latérale — `review_date` change de sens sans changer de forme, donc
+  sans migration.
+- **Consignes du modèle en Swift, pas dans le prompt** : contrat JSON, liste des projets et
+  identité de l'utilisateur sont concaténés autour du prompt utilisateur — `defaultAgenticPrompt`
+  est figé dans le `settings.json` des installations existantes et ne peut rien propager.
+- **Perf** : ~100 % → 26 % de CPU pendant une longue réunion. Transcript live plafonné et rendu en
+  `LazyVStack` (une `Text` par tour) au lieu d'une `Text` unique re-typographiée à chaque frame,
+  scroll auto désanimé, FFT du spectrogramme coupée quand rien ne l'affiche, spectrogramme
+  composité en un seul `CGImage`. Outil de mesure : `./profile.py`.
+- **Correctif de perte de données** : l'AEC hors-ligne écrivait un fichier vide en signalant un
+  succès quand le micro était illisible, et la transcription enchaînait sur du silence. `writeMono16k`
+  lève désormais au lieu d'écrire, et le repli s'active.
+- **Robustesse IA** : une réponse à `content` null ne remonte plus en `DecodingError` opaque.
+- **Séries de réunions** : clé de série par titre normalisé ; un titre auto (« Réunion du 21 août
+  2026 ») ne forme plus de série. Le pré-brief est scoré (série +20 > projet > responsable >
+  participants) au lieu d'un filtre binaire.
+- **Confidentialité** : seul le digest mail (métadonnées + 300 caractères d'aperçu par
+  conversation) atteint l'endpoint IA, jamais le corps des messages ; aucun contenu de mail dans
+  les logs. Pépito ne modifie, ne classe ni n'envoie aucun mail.
 
-- `EchoCancellingProcessor.process` reported success while writing an **empty** file whenever the
-  microphone could not be read: `readMono16k` returns `[]`, `EchoCanceller.cancel` passes it
-  through, and `writeMono16k` created the output file *before* its `guard`, then returned early.
-  `transcribeWithOfflineAEC` only falls back on a thrown error, so it went on to transcribe
-  silence — losing a whole meeting's microphone transcript without a single log line, on a path
-  CLAUDE.md §7 explicitly guards ("ne jamais perdre un enregistrement"). `writeMono16k` now throws
-  when there is nothing to write and creates the file last, so no empty CAF is left behind and the
-  caller falls back to normal transcription.
-- Found while adding the coverage this path never had. Three tests now pin it: resampling
-  (48 kHz stereo → mono 16 kHz), end-to-end echo removal through files (>7 dB, same threshold as
-  the array-level test — catches wiring bugs the algorithm's unit tests cannot), and the
-  fail-don't-write-silence contract. All three verified to fail when the code they cover is broken.
+### Reporté
 
-### Fixed — Swift 6 concurrency warnings
+- **Recherche sémantique du Vault (RAG)** — attend la base vectorielle native de macOS 27, pour
+  éviter un index d'embeddings maison jetable.
+- **IA générative on-device (Foundation Models)** — 4096 tokens de contexte sur macOS 26, soit 4 à
+  7 minutes de transcript par appel ; `PrivateCloudComputeLanguageModel` passe à 32 000 tokens sur
+  macOS 27.
+- **Écriture dans Mail** — brouillons de réponse, drapeaux, archivage et triage automatique restent
+  hors périmètre.
 
-- `EchoCancellingProcessor.readMono16k` fed its whole buffer to `AVAudioConverter` through a
-  `@Sendable` input block that captured a non-`Sendable` `AVAudioPCMBuffer` and mutated a captured
-  `var` — three warnings. A small `@unchecked Sendable` box now hands the buffer over once and
-  returns nil afterwards, which also removes the separate `supplied` flag (same shape as
-  `LivePendingBuffer` in TranscriptionKit; kept local rather than coupling the two Kits over four
-  lines). New round-trip test: 48 kHz stereo in, mono 16 kHz out, verified to fail if the box breaks.
-- `CoreAudioTapSystemAudioRecorder.stringProperty` received a +1 `CFString` into a Swift `CFString`
-  variable. Now goes through `Unmanaged<CFString>` and `takeRetainedValue()`, making the ownership
-  transfer explicit.
+### Limites connues
 
-Clean `swift build -c release` and `swift build` are now warning-free.
-
-### Fixed — 100 % CPU during long meetings
-
-Net result, measured on a `release` build with the live transcript and the menu-bar popover both
-open: **~100 % → 26 % CPU**, main thread 98 % → 21 % busy (78 % of its samples now parked in
-`mach_msg2_trap`). No remaining hot spot above 1 %; what is left is AttributeGraph, `objc_msgSend`
-and Metal — the inherent cost of a 30 Hz spectrogram plus a live-updating transcript.
-
-- The live transcript view pinned the main thread at **100 % CPU** for the whole duration of a
-  recording. `LiveTranscriptView` renders the entire live transcript as a single `Text`, which
-  SwiftUI re-measures and CoreText fully re-typesets on every render pass — ~250 000 characters
-  for a 3 h meeting. Profiling (`sample`) put ~80 % of the CPU in CoreText glyph encoding
-  (`TASCIIEncoder::Encode`) and only 0.6 % in Pepito's own code.
-  - The **displayed** live text is now capped to the last `MeetingCoordinator
-    .liveDisplaySegmentCap` (200) turns per source. This also bounds `BleedFilter`, which was
-    O(n·m) over the full history on every volatile speech hypothesis. The reference transcript is
-    untouched: `liveTranscriptText` is display-only, `stopLive()` still returns every segment.
-  - Auto-scroll no longer animates — `live` changes several times a second, so overlapping
-    animated scrolls kept a 60 Hz render loop alive for the whole meeting.
-  - That got it to 33 %, not to zero: re-profiling showed CoreText **shaping** (`OTL::GPOS`,
-    kerning, variable-font axes) still burning ~80 % across three passes per frame — AppKit
-    constraint update, SwiftUI layout, and draw — because `ScrollView { Text(…) }` has to measure
-    the whole string to size its content. The transcript is now a `LazyVStack` of one `Text` per
-    turn (`MeetingCoordinator.liveTranscriptLines`), so only visible lines are measured and drawn.
-    Text selection becomes per-line instead of continuous — accepted.
-- `symbolEffect(.variableColor)` on the recording indicator was profiled at **0.1 %**, not the
-  suspected hot spot. Left alone.
-- The spectrogram is no longer computed at all when nothing displays it. The rolling FFT ran at
-  30 Hz for the whole recording, but `RecordingLevelsView` only ever lives in the menu-bar
-  popover; closed, both the FFT and its 30 observable mutations per second (each invalidating a
-  SwiftUI graph) were pure waste. `MeetingCoordinator.levelsVisible`, toggled by the popover's
-  `onAppear`/`onDisappear`, now gates the sampling loop together with `isRecording`. The rolling
-  history is cleared on hide, so reopening rebuilds it over ~4.6 s rather than showing stale
-  columns. `SpectrumMeter.push` still runs on the audio thread — it is a copy into a sliding
-  window, not a computation, and it keeps the first frame after reopening meaningful.
-- The spectrogram profiled at ~17 % while the menu-bar popover is open: 140 columns × 64 bands ×
-  2 sources = 17 920 `ctx.fill` per frame at 30 Hz, each allocating a `Path`, a `CGRect` and a
-  `Color`. `RecordingLevelsView` now composites both sources into one RGBA `CGImage` (one pixel
-  per cell, premultiplied source-over, drawn with `.interpolation(.none)` to keep the cells
-  crisp) and draws it in a single `ctx.draw`. This is the upgrade its `ponytail:` note named.
-  New `PepitoTests` target covers the hand-rolled pixel math: row flip, threshold, source-over
-  ordering, uneven column counts.
-
-### Added — profiling
-
-- **`./profile.py [seconds]`** — profiles the running app via `sample(1)`: prints instantaneous
-  CPU, a per-thread active/total breakdown, self-time and Pepito-only inclusive tables, and writes
-  a flamegraph SVG to `.build/`. No dependency, no Instruments. Reading guide in `CLAUDE.md` §10.
-
-### Changed — UX pass
-
-- Mail review: the whole section title toggles its `DisclosureGroup` (macOS only reacted to the
-  chevron), and a conversation whose action is done/dropped leaves its urgency section — and its
-  counter — for the ⚪ archive.
-- The sidebar's 🔴 badge now counts what is *left* to handle: `mailReviews()` joins `action` and
-  the counters are recomputed on every status change (`updateActionStatus` is the single funnel).
-- Meeting summary is editable: double-click the body to switch to a Markdown editor, saved
-  straight into `summary.md` (front-matter preserved, Vault stays the source of truth).
-  `MarkdownText` lost `.textSelection` — it swallowed the double-click.
-
-### Changed
-
-- Default agentic prompt now leverages `{{context}}`, `{{user_notes}}` and `{{open_actions}}`.
-- `MeetingPipeline.process` accepts `context` / `userNotes` / `openActions` and returns
-  `actionUpdates`; `PipelineResult` gained an `actionUpdates` field.
-- Info.plist: added `NSCalendarsFullAccessUsageDescription`,
-  `NSRemindersFullAccessUsageDescription` and `NSAppleEventsUsageDescription` (Mail automation).
-- Additive SQLite migrations (new `action` and `mail_item` tables; `participants` and `user_notes`
-  columns on `meeting`; `source_url` column on `action`).
-- `Settings` gained `mailPrompt` / `mailDays` / `mailLimit`; `ActionItem` gained `sourceURL`.
-
-### Deferred
-
-- **Vault semantic search / RAG** — deferred until macOS 27 ships a native vector database with
-  Apple Intelligence, to avoid a throwaway home-grown embedding index.
-- **Mail write-back** — AI-drafted replies, flagging, archiving and scheduled/automatic triage are
-  out of scope for now (read-only integration).
-
-### Notes
-
-- 81 tests passing (`swift build` / `swift test`). Calendar, Reminders and Mail access is
-  compile-verified only — it needs the `.app` bundle (`build-app.sh`) and a TCC grant on real
-  hardware.
-- Sandboxing caveat: sending Apple Events to Mail requires a temporary-exception entitlement that
-  the Mac App Store rejects (fine for notarised Developer ID distribution). To be settled in
-  Phase 8.
+- **Non notarisée** : pas de compte Apple Developer, donc DMG signé ad-hoc et avertissement
+  Gatekeeper au premier lancement (voir les instructions d'installation de la release).
+- Les chemins matériels (taps Core Audio, TCC, SpeechAnalyzer, Mail, Calendrier, Rappels) ne sont
+  pas couverts par la CI : ils passent par la checklist QA manuelle (`Packaging/QA-CHECKLIST.md`).
+- L'envoi d'Apple Events à Mail exige une entitlement d'exception temporaire refusée par le Mac App
+  Store — sans effet sur une distribution Developer ID notarisée. À trancher en phase 8.

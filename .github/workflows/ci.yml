@@ -1,0 +1,25 @@
+# CI Pépito. macos-26 est GA sur les runners GitHub-hosted, en arm64 natif, avec Xcode 26.x —
+# les prérequis du projet (macOS 26 Tahoe + Apple Silicon) sont donc couverts sans runner perso.
+# Pas de cache .build : le package n'a aucune dépendance externe, il n'y a rien à retélécharger.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+      - name: Tests
+        run: swift test
+      - name: Bundle .app
+        run: ./build-app.sh release   # le bundle doit s'assembler, pas seulement compiler

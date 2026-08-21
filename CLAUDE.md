@@ -208,7 +208,27 @@ swift test               # tests unitaires (swift-testing) de tous les Kits
 open .build/Pepito.app   # lance l'app menu-bar
 ./profile.py [secondes]  # profile l'app EN COURS D'EXÉCUTION (défaut 10 s) : points chauds + flamegraph
 ./profile.py <fichier.txt>  # réanalyse un brut déjà capturé, sans réechantillonner
+./release.sh 0.5.0       # publie une version : tests → changelog → QA manuelle → tag → release
+swift Packaging/make-icon.swift  # régénère Packaging/Pepito.icns (à ne relancer que si le dessin change)
 ```
+
+### Release management
+
+La procédure complète vit dans le skill **`.claude/skills/release/SKILL.md`** (versionné, d'où le
+`!.claude/skills/` dans `.gitignore`). En résumé : quatre portes — tests verts, changelog
+`### Fonctionnel` / `### Technique` écrit, **QA manuelle validée par l'utilisateur**
+(`Packaging/QA-CHECKLIST.md` : taps, TCC, transcription, migration — rien de tout cela n'est
+testable en CI), puis tag `vX.Y.Z` sur `main`.
+
+Le tag déclenche `.github/workflows/release.yml` (runner `macos-26`, GA et arm64 chez GitHub) qui
+construit le DMG, en extrait les notes depuis `CHANGELOG.md` et publie la release. `.github/workflows/ci.yml`
+fait tourner `swift test` + l'assemblage du bundle sur `main` et sur les PR.
+
+Version : `Packaging/Info.plist` est la **source de vérité unique** (`CFBundleShortVersionString`
++ `CFBundleVersion`), affichée en pied de l'écran d'administration. Pré-1.0 : `MINOR` = feature
+**ou** rupture, `PATCH` = correctif. `1.0.0` = phase 8 (Developer ID + notarisation + validation
+matérielle). L'app n'est **pas notarisée** aujourd'hui : le DMG est signé ad-hoc et chaque note de
+release explique le contournement Gatekeeper.
 
 Important : lancer le **bundle** `.app` (via `build-app.sh`), pas le binaire SPM nu
 (`.build/debug/Pepito`) — sans bundle Info.plist, la gestion des fenêtres, l'activation, les

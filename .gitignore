@@ -1,4 +1,6 @@
-.claude/
+# Réglages Claude locaux ignorés, mais le skill release est versionné.
+.claude/*
+!.claude/skills/
 .build/
 .swiftpm/
 *.xcodeproj

@@ -1634,10 +1634,21 @@ struct AdminView: View {
                     dismissWindow(id: "settings")
                 }
                 .keyboardShortcut(.defaultAction)
+            } footer: {
+                // Un rapport de bug sans numéro de build ne sert à rien.
+                Text("Pépito \(Self.version)").font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .frame(width: 520, height: 600)
+    }
+
+    /// Version affichée : « 0.5.0 (12) », lue dans l'Info.plist du bundle.
+    static var version: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(short) (\(build))"
     }
 
     private func chooseVaultFolder() {

@@ -17,6 +17,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Pepito"
 cp Packaging/Info.plist "$APP/Contents/Info.plist"
+cp Packaging/Pepito.icns "$APP/Contents/Resources/Pepito.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # Signature. L'ad-hoc (-) change de hash à chaque build : TCC (Enregistrement d'écran,

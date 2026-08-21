@@ -1,0 +1,82 @@
+# Publication d'une release : déclenchée par un tag vX.Y.Z (ou vX.Y.Z-rc.N → pre-release).
+# Le tag est poussé par ./release.sh, qui a déjà fait passer la QA manuelle en local.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: v
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          PLIST=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Packaging/Info.plist)
+          # Garde-fou : un tag qui ne correspond pas à l'Info.plist livrerait une app mal versionnée.
+          if [ "$PLIST" != "${V%%-*}" ]; then
+            echo "::error::tag $GITHUB_REF_NAME vs Info.plist $PLIST — versions divergentes"
+            exit 1
+          fi
+
+      - name: Tests
+        run: swift test   # un tag ne part jamais sur du rouge, même si release.sh a déjà testé
+
+      - name: Bundle .app
+        run: ./build-app.sh release
+
+      - name: DMG
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          STAGE=$(mktemp -d)
+          cp -R .build/Pepito.app "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "Pepito $V" -srcfolder "$STAGE" -ov -format UDZO "Pepito-$V.dmg"
+          shasum -a 256 "Pepito-$V.dmg" | tee "Pepito-$V.dmg.sha256"
+
+      - name: Notes de release
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          # Section du changelog correspondant à la version, sans son titre.
+          awk -v v="## [${V%%-*}]" '
+            index($0, v) == 1 { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::aucune section ## [${V%%-*}] dans CHANGELOG.md"
+            exit 1
+          fi
+          cat >> notes.md <<EOF
+
+          ## Installation
+
+          Requiert **macOS 26 (Tahoe)** et un Mac **Apple Silicon**.
+
+          1. Ouvrir \`Pepito-$V.dmg\`, glisser **Pépito** dans Applications.
+          2. L'app n'est **pas notarisée** (pas de compte Apple Developer) : au premier lancement,
+             **clic droit sur Pépito › Ouvrir**, puis confirmer. En cas de blocage persistant :
+             \`xattr -dr com.apple.quarantine /Applications/Pepito.app\`
+          3. Accorder les permissions à la demande : Micro, Enregistrement d'écran (capture de la
+             sortie audio système), Reconnaissance vocale, Calendrier, Rappels, Mail.
+
+          SHA-256 : \`$(cut -d' ' -f1 "Pepito-$V.dmg.sha256")\`
+          EOF
+
+      - name: Publier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          case "$GITHUB_REF_NAME" in *-rc*) PRE=--prerelease ;; *) PRE= ;; esac
+          gh release create "$GITHUB_REF_NAME" $PRE \
+            --title "Pépito $V" --notes-file notes.md \
+            "Pepito-$V.dmg" "Pepito-$V.dmg.sha256"
