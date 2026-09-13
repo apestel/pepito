@@ -49,6 +49,9 @@ public final class Database {
         if !existing.contains("project_id") {
             try exec("ALTER TABLE meeting ADD COLUMN project_id TEXT REFERENCES project(id) ON DELETE SET NULL;")
         }
+        if !existing.contains("summary_instructions") {
+            try exec("ALTER TABLE meeting ADD COLUMN summary_instructions TEXT;")
+        }
         let actionColumns = Set(try query("PRAGMA table_info(action)") { self.colText($0, 1) ?? "" })
         if !actionColumns.contains("source_url") {
             try exec("ALTER TABLE action ADD COLUMN source_url TEXT;")
@@ -81,7 +84,7 @@ public final class Database {
       started_at REAL NOT NULL, ended_at REAL,
       status TEXT NOT NULL, folder_path TEXT NOT NULL,
       session_dir TEXT, transcript TEXT, last_error TEXT, updated_at REAL NOT NULL,
-      participants TEXT NOT NULL DEFAULT '');
+      participants TEXT NOT NULL DEFAULT '', summary_instructions TEXT);
     CREATE TABLE IF NOT EXISTS tag(name TEXT PRIMARY KEY, created_at REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS meeting_tag(
       meeting_id TEXT NOT NULL REFERENCES meeting(id) ON DELETE CASCADE,
@@ -107,28 +110,45 @@ public final class Database {
 
     // MARK: - API
 
-    /// Toutes les réunions, plus récente en tête, tags inclus.
-    public func loadAll() throws -> [Meeting] {
-        var meetings = try query(
-            "SELECT id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error,participants,user_notes,project_id"
-            + " FROM meeting ORDER BY started_at DESC") { Self.buildMeeting($0) }
-            .compactMap { $0 }
-        for i in meetings.indices { meetings[i].tags = try tags(for: meetings[i].id) }
+    private static func meetingSelect(includeTranscripts: Bool) -> String {
+        "SELECT id,title,started_at,ended_at,status,folder_path,session_dir,"
+        + (includeTranscripts ? "transcript" : "NULL")
+        + ",last_error,participants,user_notes,project_id,summary_instructions FROM meeting"
+    }
+
+    /// Toutes les réunions, plus récente en tête. La timeline omet les transcripts volumineux.
+    public func loadAll(includeTranscripts: Bool = true) throws -> [Meeting] {
+        var meetings = try query(Self.meetingSelect(includeTranscripts: includeTranscripts)
+                                 + " ORDER BY started_at DESC") { Self.buildMeeting($0) }.compactMap { $0 }
+        let pairs = try query("SELECT meeting_id,tag_name FROM meeting_tag ORDER BY tag_name") {
+            (self.colText($0, 0) ?? "", self.colText($0, 1) ?? "")
+        }
+        var tagsByID: [String: [String]] = [:]
+        for (id, tag) in pairs where !tag.isEmpty { tagsByID[id, default: []].append(tag) }
+        for i in meetings.indices { meetings[i].tags = tagsByID[meetings[i].id.uuidString] ?? [] }
         return meetings
+    }
+
+    /// Charge le contenu complet uniquement pour la réunion consultée ou retraitée.
+    public func loadMeeting(_ id: UUID) throws -> Meeting? {
+        var meeting = try query(Self.meetingSelect(includeTranscripts: true) + " WHERE id=?",
+                                bind: { try self.text($0, 1, id.uuidString) }) { Self.buildMeeting($0) }.compactMap { $0 }.first
+        if meeting != nil { meeting?.tags = try tags(for: id) }
+        return meeting
     }
 
     /// Insère ou met à jour une réunion (par `id`) et réécrit ses liaisons de tags.
     public func save(_ m: Meeting) throws {
         try transaction {
             try run("""
-                INSERT INTO meeting(id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error,updated_at,participants,user_notes,project_id)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO meeting(id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error,updated_at,participants,user_notes,project_id,summary_instructions)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET title=excluded.title, started_at=excluded.started_at,
                   ended_at=excluded.ended_at, status=excluded.status, folder_path=excluded.folder_path,
                   session_dir=excluded.session_dir, transcript=excluded.transcript,
                   last_error=excluded.last_error, updated_at=excluded.updated_at,
                   participants=excluded.participants, user_notes=excluded.user_notes,
-                  project_id=excluded.project_id
+                  project_id=excluded.project_id, summary_instructions=excluded.summary_instructions
                 """) { s in
                 try self.text(s, 1, m.id.uuidString); try self.text(s, 2, m.title)
                 try self.real(s, 3, m.startedAt.timeIntervalSince1970)
@@ -138,6 +158,7 @@ public final class Database {
                 try self.text(s, 9, m.lastError); try self.real(s, 10, Date().timeIntervalSince1970)
                 try self.text(s, 11, Self.encodeStrings(m.participants)); try self.text(s, 12, m.userNotes)
                 try self.text(s, 13, m.projectID?.uuidString)
+                try self.text(s, 14, m.summaryInstructions)
             }
             try addTags(m.tags)
             try run("DELETE FROM meeting_tag WHERE meeting_id=?") { try self.text($0, 1, m.id.uuidString) }
@@ -374,7 +395,7 @@ public final class Database {
             projectID: column(s, 11).flatMap { UUID(uuidString: $0) },
             folderPath: folder,
             sessionDirPath: column(s, 6), transcript: column(s, 7),
-            userNotes: column(s, 10) ?? "", lastError: column(s, 8))
+            userNotes: column(s, 10) ?? "", summaryInstructions: column(s, 12), lastError: column(s, 8))
     }
 
     /// Encodage JSON d'une liste de chaînes (participants) — robuste aux virgules dans les noms.

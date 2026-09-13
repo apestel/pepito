@@ -116,3 +116,50 @@ private func energy(_ url: URL) throws -> Float {
     // Et surtout : pas de fichier vide laissé derrière, que le pipeline prendrait pour un succès.
     #expect(FileManager.default.fileExists(atPath: outURL.path) == false)
 }
+
+@Test(arguments: [-180, 180])
+func echoStreamingMatchesWholeFileAcrossBlocks(delay: Int) throws {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("aec-stream-\(UUID())")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let n = 330_000
+    var seed: UInt32 = 75
+    let reference: [Float] = (0..<(n - 5000)).map { _ in
+        seed = seed &* 1664525 &+ 1013904223
+        return Float(seed) / Float(UInt32.max) * 2 - 1
+    }
+    let mic: [Float] = (0..<n).map { i in
+        let source = i - delay - (i / 160_000) * 40
+        return reference.indices.contains(source) ? reference[source] * 0.3 : 0.02
+    }
+    let expected = EchoCanceller().cancel(mic: mic, reference: reference, maxLag: 4000)
+    let aec = EchoCanceller()
+    var state = EchoCanceller.State()
+    var blocks: [Float] = []
+    for offset in stride(from: 0, to: n, by: aec.blockLength) {
+        let count = min(aec.blockLength, n - offset)
+        let range = aec.referenceRange(offset: offset, count: count, maxLag: 4000, state: state)
+        let ref = Array(reference[min(range.lowerBound, reference.count)..<min(range.upperBound, reference.count)])
+        blocks += aec.cancelBlock(mic: Array(mic[offset..<offset+count]), reference: ref,
+                                  referenceOffset: offset - range.lowerBound, maxLag: 4000, state: &state)
+    }
+    #expect(blocks == expected)
+
+    let micURL = dir.appendingPathComponent("mic.caf"), refURL = dir.appendingPathComponent("ref.caf")
+    let outURL = dir.appendingPathComponent("out.caf")
+    try writeMono16k(micURL, mic)
+    try writeMono16k(refURL, reference)
+    try EchoCancellingProcessor.process(micURL: micURL, referenceURL: refURL, outputURL: outURL)
+    let file = try AVAudioFile(forReading: outURL)
+    #expect(file.length == AVAudioFramePosition(n))
+    var actual: [Float] = []
+    while file.framePosition < file.length {
+        let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096)!
+        try file.read(into: buffer)
+        try #require(buffer.frameLength > 0)
+        actual.append(contentsOf: UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
+    }
+    #expect(actual.count == n)
+    #expect(zip(actual, expected).allSatisfy { abs($0 - $1) < 0.00001 })
+    #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).count == 3)
+}

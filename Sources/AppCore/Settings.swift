@@ -22,6 +22,8 @@ public enum EchoCancellationMode: String, Codable, CaseIterable, Sendable {
 public struct Settings: Sendable, Codable, Equatable {
     public var aiBaseURL: String
     public var aiModel: String
+    /// Budget estimé des messages entrants, hors réponse ; à adapter à la fenêtre du modèle.
+    public var aiInputTokenBudget: Int
     /// Chemin racine du Vault documentaire.
     public var vaultPath: String
     /// Prompt agentic déclenché en fin de transcript.
@@ -46,6 +48,7 @@ public struct Settings: Sendable, Codable, Equatable {
     public init(
         aiBaseURL: String = "https://api.openai.com/v1",
         aiModel: String = "gpt-4o",
+        aiInputTokenBudget: Int = 24_000,
         vaultPath: String = "",
         agenticPrompt: String = PromptTemplate.defaultAgenticPrompt,
         transcriptionLocaleIdentifier: String = "fr-FR",
@@ -59,6 +62,7 @@ public struct Settings: Sendable, Codable, Equatable {
     ) {
         self.aiBaseURL = aiBaseURL
         self.aiModel = aiModel
+        self.aiInputTokenBudget = aiInputTokenBudget
         self.vaultPath = vaultPath
         self.agenticPrompt = agenticPrompt
         self.transcriptionLocaleIdentifier = transcriptionLocaleIdentifier
@@ -78,6 +82,7 @@ public struct Settings: Sendable, Codable, Equatable {
         let d = Settings()
         aiBaseURL = try c.decodeIfPresent(String.self, forKey: .aiBaseURL) ?? d.aiBaseURL
         aiModel = try c.decodeIfPresent(String.self, forKey: .aiModel) ?? d.aiModel
+        aiInputTokenBudget = try c.decodeIfPresent(Int.self, forKey: .aiInputTokenBudget) ?? d.aiInputTokenBudget
         vaultPath = try c.decodeIfPresent(String.self, forKey: .vaultPath) ?? d.vaultPath
         agenticPrompt = try c.decodeIfPresent(String.self, forKey: .agenticPrompt) ?? d.agenticPrompt
         transcriptionLocaleIdentifier = try c.decodeIfPresent(String.self, forKey: .transcriptionLocaleIdentifier) ?? d.transcriptionLocaleIdentifier

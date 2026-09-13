@@ -34,6 +34,8 @@ public enum PathBuilder {
     public static func summaryPath(meetingFolder: String) -> String { "\(meetingFolder)/summary.md" }
     public static func actionPlanPath(meetingFolder: String) -> String { "\(meetingFolder)/action-plan.md" }
 
+    public static func instructionsPath(meetingFolder: String) -> String { "\(meetingFolder)/instructions.md" }
+
     /// Revue de boîte mail, nommée par la **période couverte** : `mails/revue-AAAA-MM-JJ.md` pour
     /// un jour, `mails/revue-AAAA-MM-JJ_AAAA-MM-JJ.md` pour un intervalle. Une par période,
     /// réécrite si on relance le triage sur la même.

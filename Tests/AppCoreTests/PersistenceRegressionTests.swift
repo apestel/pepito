@@ -306,3 +306,30 @@ func vaultWriteFailureKeepsMeetingRetryable(file: String) async throws {
     #expect(vault.exists(relativePath: "legacy/summary.md"))
     #expect(FileManager.default.fileExists(atPath: audio.appending(path: "microphone.caf").path))
 }
+
+@MainActor
+@Test func lightweightHistoryPreservesTranscriptOnEditAndResume() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("pepito-history-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let db = Database(path: root.appendingPathComponent("db"))
+    let meeting = Meeting(title: "Original", status: .processing, tags: ["z", "a"],
+                          transcript: "Transcript à conserver", userNotes: "Notes", summaryInstructions: "Consignes")
+    try db.save(meeting)
+    let app = storageCoordinator(root: root, database: db, provider: PipelineScriptedProvider([analysisJSON]))
+    var summary = try #require(app.meetings.first)
+    #expect(summary.transcript == nil)
+    #expect(summary.tags == ["a", "z"])
+    summary.title = "Corrigé"
+    app.updateMeeting(summary)
+    let stored = try #require(try db.loadMeeting(meeting.id))
+    #expect(stored.transcript == meeting.transcript)
+    #expect(stored.userNotes == "Notes")
+    #expect(stored.summaryInstructions == "Consignes")
+    #expect(stored.title == "Corrigé")
+    app.setPending(try #require(app.meetings.first))
+    #expect(app.pendingMeeting?.transcript == meeting.transcript)
+    await app.resume(try #require(app.meetings.first))
+    #expect(app.processingPhase == .done)
+    #expect(try db.loadMeeting(meeting.id)?.transcript == meeting.transcript)
+    #expect(app.meetings.first?.transcript == nil)
+}

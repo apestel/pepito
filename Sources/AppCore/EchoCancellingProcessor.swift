@@ -1,85 +1,112 @@
 import Foundation
 import AVFoundation
 
-/// Applique l'AEC hors-ligne à un couple de fichiers : lit `micro.caf` (voix + bleed) et
-/// `system.caf` (référence propre), les ramène en mono 16 kHz, annule l'écho, écrit le micro nettoyé.
-/// Statique et pur fichiers → appelable hors du MainActor (traitement lourd en arrière-plan).
+/// AEC hors-ligne, avec buffers bornés : conversion sur disque puis filtrage par blocs de 10 s.
+/// Les originaux restent intacts ; le résultat n'est publié qu'une fois entièrement écrit.
 enum EchoCancellingProcessor {
-    private static let sampleRate = 16000.0
-
     static func process(micURL: URL, referenceURL: URL, outputURL: URL) throws {
-        let mic = try readMono16k(micURL)
-        let reference = try readMono16k(referenceURL)
-        let aec = EchoCanceller()
-        let maxLag = Int(sampleRate / 4)   // recherche de délai jusqu'à ±250 ms
-        let cleaned = aec.cancel(mic: mic, reference: reference, maxLag: maxLag)
-        try writeMono16k(cleaned, to: outputURL)
+        let fm = FileManager.default
+        let work = outputURL.deletingLastPathComponent().appendingPathComponent(".aec-\(UUID().uuidString)")
+        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: work) }
+        let micURL16 = work.appendingPathComponent("mic.caf")
+        let refURL16 = work.appendingPathComponent("reference.caf")
+        try convert(micURL, to: micURL16)
+        try convert(referenceURL, to: refURL16)
+        let mic = try AVAudioFile(forReading: micURL16)
+        let reference = try AVAudioFile(forReading: refURL16)
+        guard mic.length > 0 else { throw CocoaError(.fileReadCorruptFile) }
+        let result = work.appendingPathComponent("result.caf")
+        try filter(mic: mic, reference: reference, to: result)
+        // rename POSIX atomique sur le même volume, y compris si un ancien résultat existe.
+        guard rename(result.path, outputURL.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
-    /// Lit un fichier audio et le convertit en Float32 mono 16 kHz.
-    private static func readMono16k(_ url: URL) throws -> [Float] {
-        let file = try AVAudioFile(forReading: url)
-        let srcFormat = file.processingFormat
-        guard let target = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                         sampleRate: sampleRate, channels: 1, interleaved: false),
-              let converter = AVAudioConverter(from: srcFormat, to: target) else {
+    private static func filter(mic: AVAudioFile, reference: AVAudioFile, to url: URL) throws {
+        let aec = EchoCanceller()
+        var state = EchoCanceller.State()
+        let output = try AVAudioFile(forWriting: url, settings: mic.processingFormat.settings)
+        let buffer = AVAudioPCMBuffer(pcmFormat: mic.processingFormat,
+                                      frameCapacity: AVAudioFrameCount(aec.blockLength))!
+        while mic.framePosition < mic.length {
+            let offset = Int(mic.framePosition)
+            let samples = try read(mic, count: aec.blockLength)
+            guard !samples.isEmpty else { throw CocoaError(.fileReadCorruptFile) }
+            let range = aec.referenceRange(offset: offset, count: samples.count, maxLag: 4000, state: state)
+            reference.framePosition = min(AVAudioFramePosition(range.lowerBound), reference.length)
+            let ref = try read(reference, count: range.count)
+            let cleaned = reference.length == 0 ? samples : aec.cancelBlock(
+                mic: samples, reference: ref, referenceOffset: offset - range.lowerBound,
+                maxLag: 4000, state: &state)
+            buffer.frameLength = AVAudioFrameCount(cleaned.count)
+            cleaned.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: cleaned.count) }
+            try output.write(from: buffer)
+        }
+    }
+
+    private static func read(_ file: AVAudioFile, count: Int) throws -> [Float] {
+        let n = min(count, Int(file.length - file.framePosition))
+        guard n > 0 else { return [] }
+        var samples: [Float] = []
+        samples.reserveCapacity(n)
+        // AVAudioFile peut livrer moins que la capacité demandée, même avant EOF.
+        // Compléter le bloc conserve les frontières d'adaptation NLMS et toute la référence.
+        while samples.count < n {
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                               frameCapacity: AVAudioFrameCount(n - samples.count)) else {
+                throw CocoaError(.fileReadUnknown)
+            }
+            try file.read(into: buffer, frameCount: AVAudioFrameCount(n - samples.count))
+            guard buffer.frameLength > 0 else { throw CocoaError(.fileReadCorruptFile) }
+            samples.append(contentsOf: UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
+        }
+        return samples
+    }
+
+    private static func convert(_ source: URL, to destination: URL) throws {
+        let input = try ConversionInput(source)
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000,
+                                         channels: 1, interleaved: false),
+              let converter = AVAudioConverter(from: input.file.processingFormat, to: format),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16384) else {
             throw CocoaError(.fileReadCorruptFile)
         }
-        let srcFrames = AVAudioFrameCount(file.length)
-        guard srcFrames > 0,
-              let inBuf = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: srcFrames) else { return [] }
-        try file.read(into: inBuf)
-
-        let capacity = AVAudioFrameCount(Double(srcFrames) * sampleRate / srcFormat.sampleRate) + 1024
-        guard let outBuf = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return [] }
-        // Le bloc d'entrée du convertisseur est `@Sendable`, alors qu'AVAudioPCMBuffer ne l'est pas
-        // et qu'un `var` capturé serait muté hors du fil de l'appelant — deux choses que Swift 6
-        // refuse. La boîte porte les deux : elle rend le buffer une fois, puis nil, ce qui signale
-        // la fin de l'entrée sans drapeau séparé. (Jumelle de `LivePendingBuffer` dans
-        // TranscriptionKit ; 4 lignes, pas de quoi coupler les deux Kits.)
-        let pending = PendingBuffer(inBuf)
-        var convError: NSError?
-        converter.convert(to: outBuf, error: &convError) { _, status in
-            guard let next = pending.take() else {
-                status.pointee = .noDataNow
-                return nil
+        let output = try AVAudioFile(forWriting: destination, settings: format.settings)
+        while true {
+            var error: NSError?
+            let status = converter.convert(to: buffer, error: &error) { count, status in
+                input.read(count: count, status: status)
             }
-            status.pointee = .haveData
-            return next
+            if let error = input.error { throw error }
+            if let error { throw error }
+            if buffer.frameLength > 0 { try output.write(from: buffer) }
+            if status == .endOfStream { return }
+            guard status != .error, buffer.frameLength > 0 else { throw CocoaError(.fileReadCorruptFile) }
         }
-        if let convError { throw convError }
-        let n = Int(outBuf.frameLength)
-        guard n > 0, let p = outBuf.floatChannelData?[0] else { return [] }
-        return Array(UnsafeBufferPointer(start: p, count: n))
-    }
-
-    /// Écrit le micro nettoyé. **Échoue** s'il n'y a rien à écrire : un micro illisible ou vide
-    /// remonte ici sous forme de tableau vide (`readMono16k` puis `cancel` le propagent), et écrire
-    /// un CAF vide ferait « réussir » l'AEC — le pipeline transcrirait alors du silence et tout le
-    /// transcript micro de la réunion serait perdu sans un mot. En échouant, on laisse
-    /// `transcribeWithOfflineAEC` retomber sur la transcription normale.
-    private static func writeMono16k(_ samples: [Float], to url: URL) throws {
-        guard !samples.isEmpty,
-              let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                         sampleRate: sampleRate, channels: 1, interleaved: false),
-              let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else {
-            throw CocoaError(.fileWriteUnknown)
-        }
-        buf.frameLength = AVAudioFrameCount(samples.count)
-        samples.withUnsafeBufferPointer { src in
-            buf.floatChannelData![0].update(from: src.baseAddress!, count: samples.count)
-        }
-        // Fichier créé en dernier : un échec ne laisse pas un CAF vide derrière lui.
-        let file = try AVAudioFile(forWriting: url, settings: format.settings)
-        try file.write(from: buf)
     }
 }
 
-/// Livre un buffer une seule fois au bloc d'entrée du convertisseur, puis nil (= fin de l'entrée).
-/// `@unchecked` assumé : `AVAudioConverter.convert` appelle le bloc de façon synchrone sur le fil
-/// appelant, donc il n'y a pas d'accès concurrent malgré la signature `@Sendable`.
-private final class PendingBuffer: @unchecked Sendable {
-    private var buffer: AVAudioPCMBuffer?
-    init(_ buffer: AVAudioPCMBuffer) { self.buffer = buffer }
-    func take() -> AVAudioPCMBuffer? { defer { buffer = nil }; return buffer }
+/// Le callback AVAudioConverter est synchrone ; cette boîte reste sur le fil du traitement.
+private final class ConversionInput: @unchecked Sendable {
+    let file: AVAudioFile
+    var error: (any Error)?
+    init(_ url: URL) throws { file = try AVAudioFile(forReading: url) }
+    func read(count: AVAudioPacketCount, status: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        guard file.framePosition < file.length else { status.pointee = .endOfStream; return nil }
+        do {
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: min(count, 16384)) else {
+                throw CocoaError(.fileReadUnknown)
+            }
+            try file.read(into: buffer)
+            guard buffer.frameLength > 0 else { throw CocoaError(.fileReadCorruptFile) }
+            status.pointee = .haveData
+            return buffer
+        } catch {
+            self.error = error
+            status.pointee = .endOfStream
+            return nil
+        }
+    }
 }

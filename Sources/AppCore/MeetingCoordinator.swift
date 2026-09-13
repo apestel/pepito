@@ -40,6 +40,8 @@ public final class MeetingCoordinator {
     /// Notes prises par l'utilisateur pendant la réunion en cours (fenêtre live + nommage). Enrichies
     /// par l'IA (Phase C). Réinitialisées à chaque nouvel enregistrement.
     public var draftNotes: String = ""
+    public let instructionDictation: InstructionDictation
+    private var instructionMeetingID: UUID?
 
     /// Pré-brief (Phase D) : actions ouvertes des réunions passées liées aux mêmes participants,
     /// calculées au démarrage d'un enregistrement (« la dernière fois, il restait à… »).
@@ -165,6 +167,7 @@ public final class MeetingCoordinator {
         tokenStore: any TokenStore = KeychainTokenStore(),
         recordingsRoot: URL? = nil,
         capture: (any AudioCapturing)? = nil,
+        instructionDictation: InstructionDictation? = nil,
         calendar: (any CalendarProviding)? = nil,
         transcriberFactory: @escaping @Sendable () -> any Transcriber = {
             SpeechAnalyzerTranscriber(log: { AppLog.shared.log("Transcription: \($0)") })
@@ -178,6 +181,7 @@ public final class MeetingCoordinator {
         self.database = database
         self.tokenStore = tokenStore
         self.capture = capture ?? CaptureController(log: { AppLog.shared.log($0) })
+        self.instructionDictation = instructionDictation ?? InstructionDictation()
         self.calendar = calendar ?? EventKitCalendar()
         self.makeTranscriber = transcriberFactory
         self.makeLiveTranscriber = liveTranscriberFactory
@@ -219,7 +223,10 @@ public final class MeetingCoordinator {
     /// Démarre un enregistrement immédiatement. Le nom et les tags sont saisis **à l'arrêt** (fenêtre
     /// de nommage) ; un titre temporaire est utilisé d'ici là.
     public func startRecording() async {
-        guard !isRecording else { return }
+        guard !isRecording, !instructionDictation.isActive else { return }
+        guard saveSummaryInstructions(for: instructionMeetingID) else { return }
+        instructionMeetingID = nil
+        instructionDictation.text = ""
         let started = Date()
         let tempTitle = Meeting.autoTitlePrefix + Self.titleDateFormatter.string(from: started)
         let sessionDir = recordingsRoot.appending(path: UUID().uuidString)
@@ -340,6 +347,8 @@ public final class MeetingCoordinator {
         meeting.transcript = live.isEmpty ? nil : live
         meeting.userNotes = draftNotes
         meeting.status = .awaitingName
+        instructionMeetingID = meeting.id
+        instructionDictation.text = meeting.summaryInstructions ?? ""
         currentMeeting = meeting
         isStopping = false
         guard performStorage({ try persist(meeting) }) else { return }
@@ -348,6 +357,10 @@ public final class MeetingCoordinator {
 
     /// Nomme la réunion arrêtée, enregistre ses tags, puis lance le pipeline complet.
     public func nameAndProcess(title: String, tags: [String]) async {
+        guard !isRecording, !isProcessing else { return }
+        let id = currentMeeting?.id
+        await instructionDictation.stop()
+        guard currentMeeting?.id == id else { return }
         guard var meeting = currentMeeting, !isProcessing else { return }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanTitle = trimmed.isEmpty ? meeting.title : trimmed
@@ -355,7 +368,7 @@ public final class MeetingCoordinator {
             .filter { !$0.isEmpty }
         meeting.title = cleanTitle
         meeting.tags = cleanTags
-        meeting.userNotes = draftNotes   // notes éventuellement éditées dans la fenêtre de nommage
+        if instructionMeetingID == meeting.id { meeting.summaryInstructions = instructionDictation.text }
         currentMeeting = meeting
         await runPipeline(meeting)
     }
@@ -363,7 +376,9 @@ public final class MeetingCoordinator {
     /// Reprend une réunion interrompue (échec d'une étape). Réutilise le transcript persisté pour
     /// éviter de re-transcrire ; ré-exécute à partir de l'étape appropriée.
     public func resume(_ meeting: Meeting) async {
-        guard meeting.status.isResumable, !isProcessing else { return }
+        guard meeting.status.isResumable, !isProcessing, !isRecording, !instructionDictation.isActive else { return }
+        var meeting = meeting
+        guard performStorage({ meeting = try database.loadMeeting(meeting.id) ?? meeting }) else { return }
         currentMeeting = meeting
         currentSessionDir = meeting.sessionDirPath.map { URL(fileURLWithPath: $0) }
         AppLog.shared.log("Reprise du traitement : « \(meeting.title) » (étape \(meeting.status.rawValue))")
@@ -393,6 +408,12 @@ public final class MeetingCoordinator {
             AppLog.shared.log("Transcription OK : \(transcript.count) car.")
             try persist(meeting) // conserver le transcript même si le Vault est indisponible
             try writeTranscriptToVault(transcript, folder: meeting.folderPath)
+            if let instructions = meeting.summaryInstructions {
+                try vault().write(VaultDocument(
+                    relativePath: PathBuilder.instructionsPath(meetingFolder: meeting.folderPath),
+                    type: .meetingNote,
+                    markdown: instructions))
+            }
         } catch {
             fail(&meeting, phase: "Transcription", error: error)
             return
@@ -417,7 +438,8 @@ public final class MeetingCoordinator {
                 openActions: Self.openActionsText(followUp),
                 projects: projects,
                 userName: settings.userName,
-                existingActions: try database.loadAllActions().filter { $0.meetingID == meeting.id }
+                existingActions: try database.loadAllActions().filter { $0.meetingID == meeting.id },
+                inputTokenBudget: settings.aiInputTokenBudget
             )
             var completed = meeting
             completed.status = .done
@@ -476,16 +498,52 @@ public final class MeetingCoordinator {
 
     /// Relance le pipeline sur la réunion en cours (bouton « Réessayer » après un échec).
     public func retryProcessing() async {
-        guard let meeting = currentMeeting, !isProcessing else { return }
+        guard !isRecording, !isProcessing else { return }
+        let id = currentMeeting?.id
+        await instructionDictation.stop()
+        guard var meeting = currentMeeting, meeting.id == id, !isProcessing else { return }
+        if instructionMeetingID == meeting.id { meeting.summaryInstructions = instructionDictation.text }
         await runPipeline(meeting)
     }
 
     /// Prépare la reprise d'une réunion depuis la timeline : la fenêtre de nommage l'affiche (formulaire
     /// si elle n'est pas nommée, sinon état d'échec avec « Réessayer »).
     public func setPending(_ meeting: Meeting) {
+        guard !instructionDictation.isActive, !isRecording, !isProcessing else { return }
+        guard saveSummaryInstructions(for: instructionMeetingID) else { return }
+        var meeting = meeting
+        guard performStorage({ meeting = try database.loadMeeting(meeting.id) ?? meeting }) else { return }
+        instructionMeetingID = meeting.id
+        instructionDictation.text = meeting.summaryInstructions ?? ""
+        draftNotes = meeting.userNotes
         currentMeeting = meeting
         currentSessionDir = meeting.sessionDirPath.map { URL(fileURLWithPath: $0) }
         processingPhase = meeting.lastError.map { .failed($0) }
+    }
+
+    /// Démarrage explicite depuis la fenêtre de fin de réunion, sans capture système.
+    public func startInstructionDictation() {
+        guard currentMeeting?.id == instructionMeetingID, instructionMeetingID != nil,
+              !isRecording, !isProcessing else { return }
+        instructionDictation.start(locale: Locale(identifier: settings.transcriptionLocaleIdentifier))
+    }
+
+    /// Sauvegarde du brouillon sans confondre deux réunions lors d'une fermeture/changement de sélection.
+    @discardableResult
+    public func saveSummaryInstructions(for id: UUID?) -> Bool {
+        guard !isRecording, !isProcessing else { return true }
+        guard let id, instructionMeetingID == id, var meeting = currentMeeting, meeting.id == id else { return true }
+        guard meeting.summaryInstructions != instructionDictation.text else { return true }
+        meeting.summaryInstructions = instructionDictation.text
+        guard performStorage({ try persist(meeting) }) else { return false }
+        currentMeeting = meeting
+        return true
+    }
+
+    public func finishInstructionEditing(for id: UUID?) async {
+        guard instructionMeetingID == id else { return }
+        await instructionDictation.stop()
+        saveSummaryInstructions(for: id)
     }
 
     /// Choisit la meilleure source de transcript : AEC hors-ligne (si configurée) puis live persisté,
@@ -993,8 +1051,20 @@ public final class MeetingCoordinator {
 
     /// Édition manuelle d'une réunion (titre, tags, participants) depuis sa fiche.
     public func updateMeeting(_ meeting: Meeting) {
-        guard performStorage({ try persist(meeting) }) else { return }
-        if currentMeeting?.id == meeting.id { currentMeeting = meeting }
+        var updated = meeting
+        guard performStorage({
+            // Une ligne de timeline ne porte pas le transcript. L'édition de métadonnées ne
+            // doit jamais effacer le contenu ni l'état de traitement sauvegardés.
+            if var stored = try database.loadMeeting(meeting.id) {
+                stored.title = meeting.title
+                stored.participants = meeting.participants
+                stored.tags = meeting.tags
+                stored.projectID = meeting.projectID
+                updated = stored
+            }
+            try persist(updated)
+        }) else { return }
+        if currentMeeting?.id == updated.id { currentMeeting = updated }
     }
 
     /// Actions ouvertes de réunions **passées** pertinentes pour `meeting`. Sert au pré-brief et à
@@ -1098,15 +1168,22 @@ public final class MeetingCoordinator {
 
     private func persist(_ meeting: Meeting) throws {
         try database.save(meeting)
-        let loaded = try database.loadAll()
         let tags = try database.allTags()
-        meetings = loaded
+        var summary = meeting
+        summary.transcript = nil
+        summary.tags = Array(Set(summary.tags.filter { !$0.isEmpty })).sorted()
+        if let index = meetings.firstIndex(where: { $0.id == summary.id }) {
+            meetings[index] = summary
+        } else {
+            meetings.append(summary)
+        }
+        meetings.sort { $0.startedAt > $1.startedAt }
         allTags = tags
     }
 
     /// Ne remplace pas les données affichées par des tableaux vides si une lecture échoue.
     private func reloadData() throws {
-        let loadedMeetings = try database.loadAll()
+        let loadedMeetings = try database.loadAll(includeTranscripts: false)
         let loadedActions = try database.loadAllActions()
         let loadedProjects = try database.loadProjects()
         let tags = try database.allTags()

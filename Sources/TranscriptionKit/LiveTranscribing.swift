@@ -7,10 +7,13 @@ import os
 public struct LiveTranscriptUpdate: Sendable, Equatable {
     public var finalizedSegments: [TranscriptSegment]
     public var volatileText: String
+    /// Échec du flux live, affichable par les consommateurs de dictée.
+    public var errorMessage: String?
 
-    public init(finalizedSegments: [TranscriptSegment], volatileText: String) {
+    public init(finalizedSegments: [TranscriptSegment], volatileText: String, errorMessage: String? = nil) {
         self.finalizedSegments = finalizedSegments
         self.volatileText = volatileText
+        self.errorMessage = errorMessage
     }
 }
 

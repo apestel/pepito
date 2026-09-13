@@ -86,6 +86,11 @@ public final class SpeechAnalyzerLiveTranscriber: LiveTranscribing, @unchecked S
                 }
             } catch {
                 self.step("Erreur résultats live : \(error)")
+                if !(error is CancellationError) {
+                    self.updatesContinuation.yield(LiveTranscriptUpdate(
+                        finalizedSegments: self.state.withLockUnchecked { $0.finalizedSegments },
+                        volatileText: "", errorMessage: error.localizedDescription))
+                }
             }
         }
 
@@ -96,7 +101,13 @@ public final class SpeechAnalyzerLiveTranscriber: LiveTranscribing, @unchecked S
             st.resultsTask = resultsTask
         }
 
-        try await analyzer.start(inputSequence: stream)
+        do {
+            try await analyzer.start(inputSequence: stream)
+        } catch {
+            continuation.finish()
+            resultsTask.cancel()
+            throw error
+        }
     }
 
     /// Convertit chaque buffer au **format exact** de l'analyseur (copie possédée) et le met en file
@@ -123,7 +134,14 @@ public final class SpeechAnalyzerLiveTranscriber: LiveTranscribing, @unchecked S
             st.inputContinuation = nil
             return (st.analyzer, st.resultsTask)
         }
-        try? await analyzer?.finalizeAndFinishThroughEndOfInput()
+        do {
+            try await analyzer?.finalizeAndFinishThroughEndOfInput()
+        } catch {
+            updatesContinuation.yield(LiveTranscriptUpdate(
+                finalizedSegments: state.withLockUnchecked { $0.finalizedSegments },
+                volatileText: "", errorMessage: error.localizedDescription))
+            task?.cancel()
+        }
         await task?.value // attend que les derniers résultats soient collectés
         updatesContinuation.finish()
         return state.withLockUnchecked { $0.finalizedSegments }

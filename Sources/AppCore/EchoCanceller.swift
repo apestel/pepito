@@ -56,6 +56,38 @@ struct EchoCanceller {
         return out
     }
 
+    /// État conservé entre les blocs lus sur disque.
+    struct State {
+        var weights: [Float] = []
+        var delay = 0
+        var locked = false
+    }
+
+    /// Fenêtre de référence nécessaire autour du bloc micro, en coordonnées fichier.
+    func referenceRange(offset: Int, count: Int, maxLag: Int, state: State) -> Range<Int> {
+        let lags = state.locked ? (state.delay - refineRadius)...(state.delay + refineRadius) : -maxLag...maxLag
+        let first = max(0, min(offset, offset - max(lags.upperBound, state.delay)))
+        let last = max(offset + count, offset + count - min(lags.lowerBound, state.delay) + filterLength / 4)
+        return first..<last
+    }
+
+    /// Même filtre que `cancel`, avec une référence limitée à `referenceRange`.
+    func cancelBlock(mic: [Float], reference: [Float], referenceOffset: Int,
+                     maxLag: Int, state: inout State) -> [Float] {
+        if state.weights.isEmpty { state.weights = .init(repeating: 0, count: filterLength) }
+        if Self.meanSquare(reference, from: referenceOffset,
+                           count: min(mic.count, reference.count - referenceOffset)) > referenceEnergyFloor {
+            let lags = state.locked ? (state.delay - refineRadius)...(state.delay + refineRadius) : -maxLag...maxLag
+            state.delay = Self.estimateDelay(mic: mic, reference: reference, lags: lags,
+                                            offset: 0, window: min(blockLength, 48_000),
+                                            referenceOffset: referenceOffset)
+            state.locked = true
+        }
+        let aligned = Self.shift(reference, by: state.delay - filterLength / 4,
+                                 from: referenceOffset, length: mic.count)
+        return process(mic: mic, reference: aligned, weights: &state.weights)
+    }
+
     /// NLMS. `reference` déjà alignée temporellement sur `mic` (même longueur) ; `weights` (taille
     /// `filterLength`) persiste entre appels pour enchaîner les blocs. Renvoie l'erreur (= micro
     /// débarrassé de l'écho estimé), échantillon par échantillon.
@@ -114,8 +146,9 @@ struct EchoCanceller {
     /// Variante fenêtrée : délai `lag ∈ lags` tel que `mic[offset+i] ≈ écho de reference[offset+i-lag]`,
     /// évalué sur `window` échantillons à partir de `offset`.
     static func estimateDelay(
-        mic: [Float], reference: [Float], lags: ClosedRange<Int>, offset: Int, window: Int = 48000
+        mic: [Float], reference: [Float], lags: ClosedRange<Int>, offset: Int, window: Int = 48000, referenceOffset: Int? = nil
     ) -> Int {
+        let refOffset = referenceOffset ?? offset
         let n = min(window, mic.count - offset)
         var bestLag = lags.contains(0) ? 0 : lags.lowerBound
         guard n > 0 else { return bestLag }
@@ -123,12 +156,12 @@ struct EchoCanceller {
         mic.withUnsafeBufferPointer { m in
             reference.withUnsafeBufferPointer { r in
                 for lag in lags {
-                    let start = max(0, lag - offset)
-                    let end = min(n, reference.count + lag - offset)
+                    let start = max(0, lag - refOffset)
+                    let end = min(n, reference.count + lag - refOffset)
                     let count = end - start
                     guard count > n / 2 else { continue }
                     let mp = m.baseAddress! + offset + start
-                    let rp = r.baseAddress! + offset + start - lag
+                    let rp = r.baseAddress! + refOffset + start - lag
                     var dot: Float = 0
                     vDSP_dotpr(mp, 1, rp, 1, &dot, vDSP_Length(count))
                     var energy: Float = 0

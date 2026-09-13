@@ -1332,6 +1332,21 @@ struct NamingView: View {
             title = current.hasPrefix("Réunion du ") ? "" : current
             selectedTags = Set(app.pendingMeeting?.tags ?? [])
         }
+        .task(id: app.instructionDictation.text) {
+            let id = app.pendingMeeting?.id
+            do {
+                try await Task.sleep(for: .milliseconds(400))
+                try Task.checkCancellation()
+                if !app.instructionDictation.isActive { app.saveSummaryInstructions(for: id) }
+            } catch { /* Une nouvelle frappe ou la fermeture remplace cette sauvegarde. */ }
+        }
+        .onChange(of: app.instructionDictation.phase) { _, phase in
+            if phase == .idle { app.saveSummaryInstructions(for: app.pendingMeeting?.id) }
+        }
+        .onDisappear {
+            let id = app.pendingMeeting?.id
+            Task { await app.finishInstructionEditing(for: id) }
+        }
     }
 
     private var header: String {
@@ -1371,11 +1386,12 @@ struct NamingView: View {
                 .disabled(newTag.trimmingCharacters(in: .whitespaces).isEmpty)
         }
 
-        Text("Mes notes (enrichies par l'IA)").font(.subheadline).foregroundStyle(.secondary)
-        TextEditor(text: $app.draftNotes)
-            .font(.body)
-            .frame(minHeight: 60, maxHeight: 140)
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+        instructionsSection
+        if let notes = app.pendingMeeting?.userNotes, !notes.isEmpty {
+            DisclosureGroup("Notes prises pendant la réunion") {
+                Text(notes).font(.callout).textSelection(.enabled)
+            }
+        }
 
         Divider()
         HStack {
@@ -1386,6 +1402,50 @@ struct NamingView: View {
                 Task { await app.nameAndProcess(title: title, tags: Array(selectedTags)) }
             }
             .keyboardShortcut(.defaultAction)
+            .disabled(app.instructionDictation.isActive || app.isRecording || app.isProcessing)
+        }
+    }
+
+    @ViewBuilder private var instructionsSection: some View {
+        Text("Instructions pour la synthèse").font(.subheadline).foregroundStyle(.secondary)
+        Text("Ex. : mets les décisions en tête, détaille les risques et termine par les prochaines étapes.")
+            .font(.caption).foregroundStyle(.secondary)
+        TextEditor(text: Binding(
+            get: { app.instructionDictation.text },
+            set: { app.instructionDictation.text = $0 }
+        ))
+        .font(.body)
+        .frame(minHeight: 100, maxHeight: 180)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+        .disabled(app.instructionDictation.isActive)
+        .accessibilityLabel("Instructions pour la synthèse")
+
+        HStack {
+            if app.instructionDictation.phase == .stopping {
+                ProgressView().controlSize(.small)
+                Text("Finalisation de la dictée…").font(.caption)
+            } else if app.instructionDictation.isActive {
+                Button(app.instructionDictation.phase == .starting ? "Annuler la dictée" : "Arrêter la dictée") {
+                    let id = app.pendingMeeting?.id
+                    Task { await app.finishInstructionEditing(for: id) }
+                }
+                if app.instructionDictation.phase == .starting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Micro actif", systemImage: "mic.fill").foregroundStyle(.red).font(.caption)
+                }
+            } else {
+                Button { app.startInstructionDictation() } label: {
+                    Label("Dicter les instructions", systemImage: "mic")
+                }
+                .disabled(app.isRecording || app.isProcessing)
+            }
+        }
+        Text("Dictée transcrite sur ce Mac. Arrêtez-la pour corriger le texte avant l'analyse.")
+            .font(.caption).foregroundStyle(.secondary)
+        if let error = app.instructionDictation.errorMessage {
+            Label(error, systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(.orange)
         }
     }
 
@@ -1416,12 +1476,14 @@ struct NamingView: View {
         }
         Text("Le traitement peut être relancé sans ré-enregistrer.")
             .font(.caption).foregroundStyle(.secondary)
+        instructionsSection
         Divider()
         HStack {
             Button("Fermer") { dismissWindow(id: "naming") }
             Spacer()
             Button("Réessayer") { Task { await app.retryProcessing() } }
                 .keyboardShortcut(.defaultAction)
+                .disabled(app.instructionDictation.isActive || app.isRecording || app.isProcessing)
         }
     }
 
@@ -1553,6 +1615,8 @@ struct AdminView: View {
             Section("Projets") { ProjectsEditor(app: app) }
 
             Section("Prompt d'analyse (structuration après transcript)") {
+                TextField("Budget d'entrée (tokens estimés)", value: $app.settings.aiInputTokenBudget, format: .number)
+                    .help("À adapter au modèle en gardant de la place pour sa réponse. Les longs transcripts sont condensés par étapes, ce qui ajoute des appels IA. L'estimation utilise environ 4 caractères par token ; le transcript complet reste conservé.")
                 TextEditor(text: $app.settings.agenticPrompt)
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 120)

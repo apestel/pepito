@@ -49,7 +49,12 @@ public final class MicrophoneRecorder {
             try? audioFile.write(from: buffer)
             onBuffer?(buffer)
         }
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            stop() // Retirer le tap même si le moteur n'a pas démarré (prochaine dictée/reprise).
+            throw error
+        }
     }
 
     public func stop() {

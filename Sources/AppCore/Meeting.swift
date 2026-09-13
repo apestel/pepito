@@ -52,6 +52,8 @@ public struct Meeting: Sendable, Identifiable, Codable, Equatable {
     public var transcript: String?
     /// Notes prises par l'utilisateur pendant la réunion (enrichies par l'IA, Phase C).
     public var userNotes: String
+    /// Consignes de synthèse propres à cette réunion ; nil pour les anciennes réunions.
+    public var summaryInstructions: String?
     /// Message d'erreur de la dernière étape échouée (nil si aucune).
     public var lastError: String?
 
@@ -68,6 +70,7 @@ public struct Meeting: Sendable, Identifiable, Codable, Equatable {
         sessionDirPath: String? = nil,
         transcript: String? = nil,
         userNotes: String = "",
+        summaryInstructions: String? = nil,
         lastError: String? = nil
     ) {
         self.id = id
@@ -82,6 +85,7 @@ public struct Meeting: Sendable, Identifiable, Codable, Equatable {
         self.sessionDirPath = sessionDirPath
         self.transcript = transcript
         self.userNotes = userNotes
+        self.summaryInstructions = summaryInstructions
         self.lastError = lastError
     }
 
