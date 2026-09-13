@@ -17,6 +17,7 @@ let package = Package(
         .library(name: "ActionKit", targets: ["ActionKit"]),
         .library(name: "MailKit", targets: ["MailKit"]),
     ],
+    dependencies: [.package(url: "https://github.com/apple/containerization.git", exact: "0.45.0")],
     targets: [
         // App shell (SwiftUI, menu bar + fenêtre principale). Ne dépend que d'AppCore.
         .executableTarget(
@@ -26,13 +27,16 @@ let package = Package(
         // Coordination + modèles de domaine. Point d'assemblage des Kits.
         .target(
             name: "AppCore",
-            dependencies: ["CaptureKit", "TranscriptionKit", "AIKit", "VaultKit", "ActionKit", "MailKit"],
+            dependencies: ["CaptureKit", "TranscriptionKit", "AIKit", "VaultKit", "ActionKit", "MailKit", "AgentKit", "SandboxKit"],
             linkerSettings: [.linkedLibrary("sqlite3")] // module SQLite3 fourni par le SDK macOS
         ),
         // Kits : ne dépendent PAS de l'UI ni d'AppCore.
         .target(name: "CaptureKit"),
         .target(name: "TranscriptionKit"),
         .target(name: "AIKit"),
+        .target(name: "AgentKit"),
+        .executableTarget(name: "PepitoAgentProbe", dependencies: ["AppCore", "SandboxKit"]),
+        .target(name: "SandboxKit", dependencies: [.product(name: "Containerization", package: "containerization")]),
         .target(name: "VaultKit"),
         .target(name: "ActionKit"),
         .target(name: "MailKit"),
@@ -43,6 +47,8 @@ let package = Package(
         .testTarget(name: "CaptureKitTests", dependencies: ["CaptureKit"]),
         .testTarget(name: "TranscriptionKitTests", dependencies: ["TranscriptionKit"]),
         .testTarget(name: "AIKitTests", dependencies: ["AIKit"]),
+        .testTarget(name: "AgentKitTests", dependencies: ["AgentKit"]),
+        .testTarget(name: "SandboxKitTests", dependencies: ["SandboxKit"]),
         .testTarget(name: "VaultKitTests", dependencies: ["VaultKit"]),
         .testTarget(name: "ActionKitTests", dependencies: ["ActionKit"]),
         .testTarget(name: "MailKitTests", dependencies: ["MailKit"]),

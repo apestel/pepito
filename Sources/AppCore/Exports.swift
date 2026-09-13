@@ -4,3 +4,5 @@
 @_exported import VaultKit
 @_exported import TranscriptionKit
 @_exported import MailKit
+
+@_exported import AgentKit

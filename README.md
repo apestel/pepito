@@ -11,6 +11,11 @@ produces **hierarchical action plans** filed into a local Markdown Vault.
 Raw audio never leaves the machine without an explicit action. The Cloud (planned) is an optional
 extension, never a prerequisite.
 
+## Missions (implementation branch)
+
+A persistent mission workspace embeds Pi and uses separate Linux VMs for scripts and Chromium.
+See [AGENTIC.md](AGENTIC.md) for setup, permissions, verification and current limitations.
+
 ## Requirements
 
 - **macOS 26 (Tahoe)** minimum — required by SpeechAnalyzer / SpeechTranscriber.

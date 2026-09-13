@@ -5,7 +5,17 @@ import AppCore
 /// suivi) et interface d'administration.
 @main
 struct PepitoApp: App {
-    @State private var app = MeetingCoordinator()
+    @State private var app: MeetingCoordinator
+
+    init() {
+        // QA dans une base dédiée : aucune lecture des données ou du token de l'installation.
+        if let path = ProcessInfo.processInfo.environment["PEPITO_PREVIEW_ROOT"] {
+            let root = URL(fileURLWithPath:path)
+            let coordinator = MeetingCoordinator(settingsStore:SettingsStore(fileURL:root.appending(path:"settings.json")),database:Database(path:root.appending(path:"pepito.db")),tokenStore:InMemoryTokenStore(),recordingsRoot:root.appending(path:"recordings"))
+            coordinator.beginMission()
+            _app = State(initialValue:coordinator)
+        } else { _app = State(initialValue:MeetingCoordinator()) }
+    }
 
     var body: some Scene {
         MenuBarExtra("Pépito", systemImage: app.isRecording ? "record.circle.fill" : "waveform.circle") {
@@ -15,7 +25,10 @@ struct PepitoApp: App {
 
         Window("Pépito", id: "main") {
             MainView(app: app).storageAlert(app)
+                .onAppear { if ProcessInfo.processInfo.environment["PEPITO_PREVIEW_ROOT"] != nil { NSApp.activate(ignoringOtherApps:true) } }
         }
+
+        .defaultLaunchBehavior(ProcessInfo.processInfo.environment["PEPITO_PREVIEW_ROOT"] == nil ? .automatic : .presented)
 
         Window("Réglages", id: "settings") {
             AdminView(app: app).storageAlert(app)

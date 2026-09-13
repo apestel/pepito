@@ -1,6 +1,6 @@
 # CI Pépito. macos-26 est GA sur les runners GitHub-hosted, en arm64 natif, avec Xcode 26.x —
 # les prérequis du projet (macOS 26 Tahoe + Apple Silicon) sont donc couverts sans runner perso.
-# Pas de cache .build : le package n'a aucune dépendance externe, il n'y a rien à retélécharger.
+# Les diagnostics de VM sont exécutés localement ; le runner vérifie les tests et le bundle.
 name: CI
 
 on:
@@ -18,6 +18,13 @@ jobs:
     timeout-minutes: 45   # une minute macOS coûte ×10 : jamais de job qui traîne
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+      - name: Runtime tests
+        run: |
+          npm ci --ignore-scripts --prefix Runtime
+          npm test --prefix Runtime
       - name: Toolchain
         run: swift --version && xcodebuild -version
       - name: Tests

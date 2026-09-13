@@ -4,6 +4,18 @@ Plan phasé, exhaustif et enrichi. Chaque phase liste un objectif, des tâches, 
 « fait ». Les fonctionnalités marquées 💡 sont des enrichissements proposés au-delà du cahier des
 charges initial.
 
+## Lot Missions — branche `codex/pepito-agentic` (en validation)
+
+- [x] Pi embarqué, dépendances verrouillées et test réel du protocole d’outils.
+- [x] VM Apple sans réseau pour scripts ; seconde VM pour Chromium/Playwright.
+- [x] Sources autorisées, imports, livrables, téléchargements contrôlés et conflits de statut.
+- [x] Espace Missions, conversation persistante, validations, arrêt et reprise.
+- [x] Tests unitaires, diagnostics VM/navigateur réels et bundle release signé.
+- [ ] Validation complète avec l’endpoint utilisateur : token refusé (HTTP 401).
+- [ ] QA d’enregistrement réel et mesure des ressources sous charge.
+
+Architecture, limites et commandes : [AGENTIC.md](AGENTIC.md).
+
 ---
 
 ## Phase 0 — Amorçage & fondations (semaine 1) — ✅ TERMINÉE

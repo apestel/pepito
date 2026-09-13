@@ -1,0 +1,13 @@
+{
+  "name": "pepito-agent-runtime",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test *.test.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "playwright-core": "1.58.2",
+    "typebox": "1.3.7"
+  }
+}
