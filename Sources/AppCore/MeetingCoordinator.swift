@@ -74,6 +74,8 @@ public final class MeetingCoordinator {
     public var isRecording: Bool = false
     public var isProcessing: Bool = false
     public var statusMessage: String?
+    /// Erreur présentée dans toutes les fenêtres ; les éditions non sauvegardées ne sont pas validées.
+    public var storageError: String?
     /// Étape de traitement en cours, pour la barre de progression de la fenêtre de nommage.
     public var processingPhase: ProcessingPhase?
 
@@ -186,11 +188,7 @@ public final class MeetingCoordinator {
             ?? URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "Pepito/recordings")
 
         self.settings = settingsStore.load()
-        self.meetings = database.loadAll()
-        self.actions = database.loadAllActions()
-        self.projects = database.loadProjects()
-        self.allTags = database.allTags()
-        self.mailReviews = database.mailReviews()
+        performStorage { try reloadData() }
         self.tokenPresent = ((try? tokenStore.token(for: tokenAccount)) ?? nil) != nil
     }
 
@@ -288,9 +286,10 @@ public final class MeetingCoordinator {
         currentSessionDir = sessionDir
         refreshPreBrief(for: meeting)   // « la dernière fois, il restait à… »
         isRecording = true
-        persist(meeting)   // résilience : la réunion existe en base dès le départ
+        let saved = performStorage { try persist(meeting) }
         syncLevelSampling()   // ne démarre la FFT que si une vue affiche les niveaux
 
+        guard saved else { return }
         let activeSources = capture.startedSources
         if activeSources.contains(.system) {
             statusMessage = "Enregistrement (micro + système)…"
@@ -342,24 +341,21 @@ public final class MeetingCoordinator {
         meeting.userNotes = draftNotes
         meeting.status = .awaitingName
         currentMeeting = meeting
-        persist(meeting)
         isStopping = false
+        guard performStorage({ try persist(meeting) }) else { return }
         statusMessage = "En attente de nom…"
     }
 
     /// Nomme la réunion arrêtée, enregistre ses tags, puis lance le pipeline complet.
     public func nameAndProcess(title: String, tags: [String]) async {
-        guard var meeting = currentMeeting else { return }
+        guard var meeting = currentMeeting, !isProcessing else { return }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanTitle = trimmed.isEmpty ? meeting.title : trimmed
         let cleanTags = tags.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         meeting.title = cleanTitle
-        meeting.folderPath = PathBuilder.meetingFolder(date: meeting.startedAt, title: cleanTitle)
         meeting.tags = cleanTags
         meeting.userNotes = draftNotes   // notes éventuellement éditées dans la fenêtre de nommage
-        database.addTags(cleanTags)
-        allTags = database.allTags()
         currentMeeting = meeting
         await runPipeline(meeting)
     }
@@ -378,6 +374,10 @@ public final class MeetingCoordinator {
     /// étape ; un échec laisse la réunion reprenable (`lastError` renseigné, `status` sur l'étape).
     private func runPipeline(_ meetingIn: Meeting) async {
         var meeting = meetingIn
+        if meeting.folderPath.isEmpty {
+            meeting.folderPath = PathBuilder.meetingFolder(
+                date: meeting.startedAt, title: meeting.title, meetingID: meeting.id)
+        }
         isProcessing = true
         meeting.lastError = nil
 
@@ -387,11 +387,12 @@ public final class MeetingCoordinator {
             processingPhase = .transcribing
             meeting.status = .transcribing
             statusMessage = "Transcription…"
-            persist(meeting)
+            try persist(meeting)
             transcript = try await resolveTranscript(for: meeting)
             meeting.transcript = transcript
             AppLog.shared.log("Transcription OK : \(transcript.count) car.")
-            writeTranscriptToVault(transcript, folder: meeting.folderPath)
+            try persist(meeting) // conserver le transcript même si le Vault est indisponible
+            try writeTranscriptToVault(transcript, folder: meeting.folderPath)
         } catch {
             fail(&meeting, phase: "Transcription", error: error)
             return
@@ -402,7 +403,7 @@ public final class MeetingCoordinator {
             processingPhase = .analyzing
             meeting.status = .processing
             statusMessage = "Analyse IA…"
-            persist(meeting)
+            try persist(meeting)
             guard let provider = provider() else { throw CoordinatorError.notConfigured }
             AppLog.shared.log("Analyse IA via \(settings.aiBaseURL) (modèle \(settings.aiModel))…")
             let pipeline = MeetingPipeline(provider: provider, vault: vault())
@@ -415,14 +416,26 @@ public final class MeetingCoordinator {
                 userNotes: meeting.userNotes,
                 openActions: Self.openActionsText(followUp),
                 projects: projects,
-                userName: settings.userName
+                userName: settings.userName,
+                existingActions: try database.loadAllActions().filter { $0.meetingID == meeting.id }
             )
-            actions.removeAll { $0.meetingID == meeting.id }   // idempotent en cas de reprise
-            actions.append(contentsOf: result.actions)
-            database.saveActions(result.actions)
-            // Suivi cross-réunion : appliquer les résolutions détectées sur les actions passées.
-            for update in result.actionUpdates { updateActionStatus(update.id, to: update.status) }
-            meeting.status = .done
+            var completed = meeting
+            completed.status = .done
+            try database.transaction {
+                let latest = try database.loadAllActions()
+                try database.saveActions(result.actions)
+                // Les écritures liées réussissent ou sont toutes annulées.
+                for update in result.actionUpdates {
+                    // Aucun suivi de CETTE réunion ne doit être réinitialisé par le retraitement.
+                    // Une édition survenue pendant la requête garde également la priorité.
+                    guard let original = followUp.first(where: { $0.id == update.id }),
+                          latest.first(where: { $0.id == update.id })?.status == original.status else { continue }
+                    try database.updateStatus(update.id, update.status)
+                }
+                try database.save(completed)
+            }
+            try reloadData()
+            meeting = completed
             processingPhase = .done
             statusMessage = "Terminé — \(result.actions.count) action(s)."
             AppLog.shared.log("Analyse OK : \(result.actions.count) action(s), \(result.documentsWritten.count) document(s)")
@@ -431,7 +444,6 @@ public final class MeetingCoordinator {
             return
         }
 
-        persist(meeting)
         currentMeeting = meeting   // conservé pour « Ouvrir l'emplacement » depuis la fenêtre de nommage
         isProcessing = false
     }
@@ -449,8 +461,8 @@ public final class MeetingCoordinator {
     public func setCurrentProject(_ id: UUID?) {
         guard var meeting = currentMeeting else { return }
         meeting.projectID = id
+        guard performStorage({ try persist(meeting) }) else { return }
         currentMeeting = meeting
-        persist(meeting)
         refreshPreBrief(for: meeting)   // recentré sur le projet, tout de suite
     }
 
@@ -458,8 +470,8 @@ public final class MeetingCoordinator {
         guard var meeting = currentMeeting else { return }
         if let i = meeting.tags.firstIndex(of: tag) { meeting.tags.remove(at: i) }
         else { meeting.tags.append(tag) }
+        guard performStorage({ try persist(meeting) }) else { return }
         currentMeeting = meeting
-        persist(meeting)
     }
 
     /// Relance le pipeline sur la réunion en cours (bouton « Réessayer » après un échec).
@@ -494,22 +506,14 @@ public final class MeetingCoordinator {
         return TranscriptFormatter.plainText(try await transcribeSources(in: dir))
     }
 
-    /// Écrit le transcript dans le Vault (best effort, journalisé).
-    private func writeTranscriptToVault(_ transcript: String, folder: String) {
-        guard !settings.vaultPath.isEmpty else {
-            AppLog.shared.log("vaultPath vide — transcript non écrit dans le Vault", level: "WARN")
-            return
-        }
-        do {
-            try Vault(root: URL(fileURLWithPath: settings.vaultPath)).write(VaultDocument(
-                relativePath: PathBuilder.transcriptPath(meetingFolder: folder),
-                type: .meetingNote,
-                markdown: transcript
-            ))
-            AppLog.shared.log("Transcript écrit dans le Vault")
-        } catch {
-            AppLog.shared.log("Échec écriture Vault : \(AppLog.describe(error))", level: "WARN")
-        }
+    /// Une écriture manquante bloque le traitement, dont le transcript reste conservé en base.
+    private func writeTranscriptToVault(_ transcript: String, folder: String) throws {
+        guard !settings.vaultPath.isEmpty else { throw CoordinatorError.notConfigured }
+        try vault().write(VaultDocument(
+            relativePath: PathBuilder.transcriptPath(meetingFolder: folder),
+            type: .meetingNote,
+            markdown: transcript
+        ))
     }
 
     /// URL du dossier de la réunion dans le Vault (pour « Ouvrir l'emplacement »), sinon dossier audio.
@@ -519,21 +523,20 @@ public final class MeetingCoordinator {
         // Ne pas supprimer la réunion en cours d'enregistrement/traitement.
         guard !(currentMeeting?.id == meeting.id && (isRecording || isProcessing)) else { return }
 
-        // Dossier du Vault — garde : jamais la racine (folderPath vide → on effacerait tout le Vault).
-        if !settings.vaultPath.isEmpty, !meeting.folderPath.isEmpty {
+        guard performStorage({ try database.delete(meeting.id) }) else { return }
+        // Les anciens dossiers peuvent être partagés : ne pas effacer les documents d'une autre réunion.
+        if !settings.vaultPath.isEmpty, !meeting.folderPath.isEmpty,
+           !meetings.contains(where: { $0.id != meeting.id && $0.folderPath == meeting.folderPath }) {
             let folder = URL(fileURLWithPath: settings.vaultPath).appending(path: meeting.folderPath)
-            try? FileManager.default.removeItem(at: folder)
+            if FileManager.default.fileExists(atPath: folder.path) {
+                performStorage { try FileManager.default.removeItem(at: folder) }
+            }
         }
-        // Fichiers audio de la session.
-        if let dir = meeting.sessionDirPath {
-            try? FileManager.default.removeItem(at: URL(fileURLWithPath: dir))
+        if let dir = meeting.sessionDirPath, FileManager.default.fileExists(atPath: dir) {
+            performStorage { try FileManager.default.removeItem(at: URL(fileURLWithPath: dir)) }
         }
-
-        database.delete(meeting.id)
         if currentMeeting?.id == meeting.id { currentMeeting = nil }
-        meetings = database.loadAll()
-        actions = database.loadAllActions()
-        AppLog.shared.log("Réunion supprimée : « \(meeting.title) »")
+        performStorage { try reloadData() }
     }
 
     /// Résumé Markdown d'une réunion, lu depuis le Vault (`summary.md`, front-matter retiré).
@@ -694,7 +697,7 @@ public final class MeetingCoordinator {
         statusMessage = "\(phase) échouée — \(error.localizedDescription)"
         processingPhase = .failed(message)
         AppLog.shared.log("\(phase) échouée : \(AppLog.describe(error))", level: "ERROR")
-        persist(meeting)
+        performStorage { try persist(meeting) }
         currentMeeting = meeting
         isProcessing = false
         isStopping = false
@@ -861,29 +864,31 @@ public final class MeetingCoordinator {
     /// Crée une action à la main (suivi, fiche réunion, barre de menu) — le seul chemin de naissance
     /// hors pipelines IA.
     public func addAction(_ action: ActionItem) {
+        guard performStorage({ try database.saveActions([action]) }) else { return }
         actions.append(action)
-        database.saveActions([action])
     }
 
     /// Pose ou retire la surcharge d'implication (`nil` = revenir à la déduction automatique).
     public func setInvolvement(_ id: UUID, to involvement: Involvement?) {
+        guard performStorage({ try database.updateInvolvement(id, involvement) }) else { return }
         if let i = actions.firstIndex(where: { $0.id == id }) { actions[i].involvement = involvement }
-        database.updateInvolvement(id, involvement)
     }
 
     // MARK: - Projets
 
     public func saveProject(_ project: Project) {
-        database.saveProject(project)
-        projects = database.loadProjects()
+        performStorage {
+            try database.saveProject(project)
+            projects = try database.loadProjects()
+        }
     }
 
     /// Supprime un projet. Ses actions restent dans le suivi, simplement non classées.
     public func deleteProject(_ id: UUID) {
-        database.deleteProject(id)
-        projects = database.loadProjects()
-        actions = database.loadAllActions()
-        meetings = database.loadAll()
+        performStorage {
+            try database.deleteProject(id)
+            try reloadData()
+        }
     }
 
     private let reminders = RemindersExporter()
@@ -924,10 +929,11 @@ public final class MeetingCoordinator {
                 prompt: settings.mailPrompt,
                 openActions: Self.openActionsText(Array(openActions.prefix(20))))
 
-            database.saveActions(result.actions)
-            database.saveMailReview(result.entries)
-            actions = database.loadAllActions()
-            mailReviews = database.mailReviews()
+            try database.transaction {
+                try database.saveActions(result.actions)
+                try database.saveMailReview(result.entries)
+            }
+            try reloadData()
             lastMailReviewDate = result.entries.first?.reviewDate
             mailStatus = "\(result.threadCount) conversations triées, \(result.actions.count) action(s)."
             if !result.ignoredIDs.isEmpty {
@@ -941,14 +947,17 @@ public final class MeetingCoordinator {
 
     /// Conversations d'une revue, par clé de période (lues à la sélection, pas à chaque rendu).
     public func mailReview(date: String) -> [MailReviewEntry] {
-        database.mailReview(date: date)
+        do { return try database.mailReview(date: date) }
+        catch { reportStorageError(error); return [] }
     }
 
     /// Retire une revue de l'historique. Les actions qu'elle a créées restent dans le suivi.
     public func deleteMailReview(date: String) {
-        database.deleteMailReview(date: date)
-        mailReviews = database.mailReviews()
-        if lastMailReviewDate == date { lastMailReviewDate = nil }
+        performStorage {
+            try database.deleteMailReview(date: date)
+            mailReviews = try database.mailReviews()
+            if lastMailReviewDate == date { lastMailReviewDate = nil }
+        }
     }
 
     /// Chemin du document Markdown correspondant dans le Vault (affiché en légende).
@@ -964,26 +973,27 @@ public final class MeetingCoordinator {
     /// Passage obligé de tout changement de statut : c'est ici que les compteurs de revue de mails
     /// (pastille « à traiter » de la barre latérale) sont recalculés.
     public func updateActionStatus(_ id: UUID, to status: ActionStatus) {
+        guard performStorage({ try database.updateStatus(id, status) }) else { return }
         if let i = actions.firstIndex(where: { $0.id == id }) { actions[i].status = status }
-        database.updateStatus(id, status)
-        mailReviews = database.mailReviews()
+        performStorage { mailReviews = try database.mailReviews() }
     }
 
-    /// Édition manuelle complète d'une action (titre, responsable, échéance, priorité, statut,
-    /// projet, implication).
+    /// Édition manuelle : tous les champs sont sauvegardés ensemble, avant de changer l'interface.
     public func updateAction(_ action: ActionItem) {
+        guard performStorage({
+            try database.transaction {
+                try database.saveActions([action])
+                try database.updateInvolvement(action.id, action.involvement)
+                try database.updateStatus(action.id, action.status)
+            }
+        }) else { return }
         if let i = actions.firstIndex(where: { $0.id == action.id }) { actions[i] = action }
-        database.saveActions([action])
-        // saveActions préserve volontairement statut et implication : ici l'utilisateur les a
-        // explicitement édités, on les réécrit.
-        database.updateInvolvement(action.id, action.involvement)
-        updateActionStatus(action.id, to: action.status)
+        performStorage { mailReviews = try database.mailReviews() }
     }
 
     /// Édition manuelle d'une réunion (titre, tags, participants) depuis sa fiche.
     public func updateMeeting(_ meeting: Meeting) {
-        persist(meeting)
-        allTags = database.allTags()
+        guard performStorage({ try persist(meeting) }) else { return }
         if currentMeeting?.id == meeting.id { currentMeeting = meeting }
     }
 
@@ -1086,9 +1096,39 @@ public final class MeetingCoordinator {
         return AppCore.makeProvider(settings: settings, token: currentToken())
     }
 
-    private func persist(_ meeting: Meeting) {
-        database.save(meeting)
-        meetings = database.loadAll()
+    private func persist(_ meeting: Meeting) throws {
+        try database.save(meeting)
+        let loaded = try database.loadAll()
+        let tags = try database.allTags()
+        meetings = loaded
+        allTags = tags
+    }
+
+    /// Ne remplace pas les données affichées par des tableaux vides si une lecture échoue.
+    private func reloadData() throws {
+        let loadedMeetings = try database.loadAll()
+        let loadedActions = try database.loadAllActions()
+        let loadedProjects = try database.loadProjects()
+        let tags = try database.allTags()
+        let reviews = try database.mailReviews()
+        meetings = loadedMeetings
+        actions = loadedActions
+        projects = loadedProjects
+        allTags = tags
+        mailReviews = reviews
+    }
+
+    @discardableResult
+    private func performStorage(_ operation: () throws -> Void) -> Bool {
+        do { try operation(); return true }
+        catch { reportStorageError(error); return false }
+    }
+
+    private func reportStorageError(_ error: Error) {
+        let message = "Échec du stockage : \(error.localizedDescription)"
+        storageError = message
+        statusMessage = message
+        AppLog.shared.log(message, level: "ERROR")
     }
 
     static let titleDateFormatter: DateFormatter = {

@@ -133,12 +133,12 @@ final class MockCalendar: CalendarProviding {
     coordinator.updateAction(action)
 
     let reloaded = Database(path: root.appending(path: "pepito.db"))
-    #expect(reloaded.loadAll().first?.participants == ["Alice", "Bob"])
-    #expect(reloaded.loadAll().first?.tags == ["budget", "q3"])
+    #expect(try reloaded.loadAll().first?.participants == ["Alice", "Bob"])
+    #expect(try reloaded.loadAll().first?.tags == ["budget", "q3"])
     #expect(coordinator.allTags.contains("q3"))
-    #expect(reloaded.loadAllActions().first?.title == "Préparer le budget Q3")
-    #expect(reloaded.loadAllActions().first?.owner == "Bob")
-    #expect(reloaded.loadAllActions().first?.status == .inProgress)
+    #expect(try reloaded.loadAllActions().first?.title == "Préparer le budget Q3")
+    #expect(try reloaded.loadAllActions().first?.owner == "Bob")
+    #expect(try reloaded.loadAllActions().first?.status == .inProgress)
 }
 
 @MainActor
@@ -307,8 +307,8 @@ final class MockCalendar: CalendarProviding {
     let weekly = Meeting(title: "Weekly Produit", folderPath: "w")
     let ailleurs = Meeting(title: "Autre sujet", folderPath: "a")
     let database = Database(path: root.appending(path: "pepito.db"))
-    database.save(weekly)
-    database.save(ailleurs)
+    try database.save(weekly)
+    try database.save(ailleurs)
     let app = MeetingCoordinator(
         settingsStore: SettingsStore(fileURL: root.appending(path: "settings.json")),
         database: database,

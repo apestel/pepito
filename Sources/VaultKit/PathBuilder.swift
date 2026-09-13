@@ -15,17 +15,18 @@ public enum PathBuilder {
         return slug.isEmpty ? "sans-titre" : slug
     }
 
-    /// Dossier d'une réunion : `AAAA/MM/JJ-slug`.
+    /// Nouveau dossier de réunion : `AAAA/MM/JJ-slug-UUID`. Les chemins déjà persistés restent inchangés.
     public static func meetingFolder(
         date: Date,
         title: String,
+        meetingID: UUID,
         calendar: Calendar = .current
     ) -> String {
         let c = calendar.dateComponents([.year, .month, .day], from: date)
         let y = String(format: "%04d", c.year ?? 0)
         let m = String(format: "%02d", c.month ?? 0)
         let d = String(format: "%02d", c.day ?? 0)
-        return "\(y)/\(m)/\(d)-\(slugify(title))"
+        return "\(y)/\(m)/\(d)-\(slugify(title))-\(meetingID.uuidString.lowercased())"
     }
 
     /// Chemins standard des documents d'une réunion.

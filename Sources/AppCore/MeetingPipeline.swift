@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import AIKit
 import VaultKit
 import ActionKit
@@ -35,8 +36,10 @@ public struct MeetingPipeline {
         userNotes: String = "",
         openActions: String = "",
         projects: [Project] = [],
-        userName: String = ""
+        userName: String = "",
+        existingActions: [ActionItem] = []
     ) async throws -> PipelineResult {
+        let existing = existingActions.filter { $0.meetingID == meeting.id }
         let dateString = Self.dateFormatter.string(from: meeting.startedAt)
         // Le contrat JSON, la liste des projets et l'identité vivent **dans le code**, pas dans
         // `defaultAgenticPrompt` : ce défaut-là est figé dans le settings.json des installations
@@ -54,6 +57,7 @@ public struct MeetingPipeline {
             )
         ) + "\n\n" + Self.identityBlock(userName)
           + Self.projectsBlock(projects, current: projects.first { $0.id == meeting.projectID })
+          + Self.existingActionsBlock(existing)
           + Self.jsonContract
 
         let reply = try await provider.complete(messages: [
@@ -63,36 +67,62 @@ public struct MeetingPipeline {
 
         let analysis = try Self.parse(reply.content)
 
-        // Construire les plans d'action (aplatir la hiérarchie via parentID) ET rendre le Markdown
-        // en une passe, avec l'`id` embarqué en commentaire HTML pour rester reconstructible (§4).
+        // Rapprochement limité à cette réunion. Aucun rapprochement flou : on ne transfère
+        // jamais le suivi humain à une action simplement ressemblante.
         var actions: [ActionItem] = []
-        var planLines: [String] = []
+        var used = Set<UUID>()
         let projectsByKey = Dictionary(
             projects.map { (Project.matchKey($0.name), $0.id) }, uniquingKeysWith: { a, _ in a })
-        func add(_ list: [AnalysisResult.Action], parent: UUID?, depth: Int) {
+        func add(_ list: [AnalysisResult.Action], parent: UUID?) throws {
             for a in list {
-                let item = ActionItem(
+                let stableID = Self.actionID(meetingID: meeting.id, parentID: parent, title: a.title)
+                let previous: ActionItem?
+                if let rawID = a.id {
+                    guard let id = UUID(uuidString: rawID), let match = existing.first(where: { $0.id == id }) else {
+                        throw AIError.decoding("Identifiant d'action inconnu dans cette réunion.")
+                    }
+                    previous = match
+                } else if let match = existing.first(where: { $0.id == stableID }) {
+                    // Le titre a pu être édité à la main depuis la première extraction.
+                    previous = match
+                } else {
+                    let matches = existing.filter {
+                        $0.parentID == parent && Self.actionTitleKey($0.title) == Self.actionTitleKey(a.title)
+                    }
+                    guard matches.count <= 1 else {
+                        throw AIError.decoding("Rapprochement d'actions ambigu : relancer l'analyse avec les identifiants existants.")
+                    }
+                    previous = matches.first
+                }
+                let item = previous ?? ActionItem(
+                    id: stableID,
                     parentID: parent,
                     meetingID: meeting.id,
-                    // Projet nommé par le modèle s'il existe, sinon celui de la réunion.
-                    projectID: a.project.flatMap { projectsByKey[Project.matchKey($0)] }
-                        ?? meeting.projectID,
+                    projectID: a.project.flatMap { projectsByKey[Project.matchKey($0)] } ?? meeting.projectID,
                     title: a.title,
                     details: a.details ?? "",
                     owner: Self.resolveOwner(a.owner, userName: userName),
                     dueDate: a.dueDate.flatMap(Self.parseDate),
                     priority: Self.parsePriority(a.priority)
                 )
+                guard used.insert(item.id).inserted else {
+                    throw AIError.decoding("Une action apparaît plusieurs fois dans la réponse ; analyse non enregistrée.")
+                }
                 actions.append(item)
-                var line = String(repeating: "  ", count: depth) + "- \(item.title)"
-                if let owner = item.owner, !owner.isEmpty { line += " (@\(owner))" }
-                if let due = a.dueDate, !due.isEmpty { line += " — échéance \(due)" }
-                line += " <!-- id:\(item.id.uuidString) -->"
-                planLines.append(line)
-                add(a.children ?? [], parent: item.id, depth: depth + 1)
+                try add(a.children ?? [], parent: item.id)
             }
         }
-        add(analysis.actions ?? [], parent: nil, depth: 0)
+        try add(analysis.actions ?? [], parent: nil)
+        // Une omission du modèle ne supprime jamais une action ni ses éditions manuelles.
+        actions.append(contentsOf: existing.filter { !used.contains($0.id) })
+        let planLines = ActionHierarchy.flattened(in: actions).map { row in
+            let item = row.item
+            var line = String(repeating: "  ", count: row.depth) + "- \(item.title)"
+            if let owner = item.owner, !owner.isEmpty { line += " (@\(owner))" }
+            if let due = item.dueDate { line += " — échéance \(Self.dateFormatter.string(from: due))" }
+            line += " <!-- id:\(item.id.uuidString) -->"
+            return line
+        }
 
         // Tags du summary : ceux saisis par l'utilisateur (prioritaires) + ceux proposés par le
         // modèle, dédupliqués sans casse en conservant l'ordre.
@@ -107,7 +137,7 @@ public struct MeetingPipeline {
             let path = PathBuilder.summaryPath(meetingFolder: meeting.folderPath)
             var frontMatter = ["title": meeting.title, "date": dateString]
             if !tags.isEmpty { frontMatter["tags"] = tags.joined(separator: ", ") }
-            try? vault.write(VaultDocument(
+            try vault.write(VaultDocument(
                 relativePath: path,
                 type: .summary,
                 frontMatter: frontMatter,
@@ -115,9 +145,9 @@ public struct MeetingPipeline {
             ))
             documentsWritten.append(path)
         }
-        if !(analysis.actions ?? []).isEmpty {
+        if !actions.isEmpty {
             let path = PathBuilder.actionPlanPath(meetingFolder: meeting.folderPath)
-            try? vault.write(VaultDocument(
+            try vault.write(VaultDocument(
                 relativePath: path,
                 type: .actionPlan,
                 frontMatter: ["title": meeting.title, "date": dateString],
@@ -141,10 +171,40 @@ public struct MeetingPipeline {
         )
     }
 
+    /// Identité déterministe pour les nouvelles actions, même si une écriture échoue avant SQLite.
+    /// ponytail: titre normalisé + parent ; une reformulation nécessite l'id renvoyé par le modèle.
+    static func actionID(meetingID: UUID, parentID: UUID?, title: String) -> UUID {
+        let seed = "pepito-meeting:\(meetingID):\(parentID?.uuidString ?? "root"):\(actionTitleKey(title))"
+        var bytes = Array(SHA256.hash(data: Data(seed.utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x50
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
+                           bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12],
+                           bytes[13], bytes[14], bytes[15]))
+    }
+
+    private static func actionTitleKey(_ title: String) -> String {
+        title.lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
+    private static func existingActionsBlock(_ actions: [ActionItem]) -> String {
+        guard !actions.isEmpty else { return "" }
+        return """
+
+        Actions déjà enregistrées pour CETTE réunion :
+        \(actions.map { "- id=\($0.id) parent=\($0.parentID?.uuidString ?? "null") : \($0.title)" }.joined(separator: "\n"))
+        Dans "actions", réutilise "id" EXACT pour toute action déjà présente, même reformulée.
+        Pour une nouvelle action seulement, mets "id": null. Les actions existantes et leurs
+        éditions humaines seront conservées par l'application.
+
+        """
+    }
+
     // MARK: - Schéma de réponse
 
     struct AnalysisResult: Decodable {
         struct Action: Decodable {
+            let id: String?
             let title: String
             let details: String?
             let owner: String?
@@ -154,7 +214,7 @@ public struct MeetingPipeline {
             let children: [Action]?
 
             enum CodingKeys: String, CodingKey {
-                case title, details, owner, priority, children, project
+                case id, title, details, owner, priority, children, project
                 case dueDate = "due_date"
             }
         }
@@ -206,7 +266,7 @@ public struct MeetingPipeline {
       "summary": "<résumé de la réunion en Markdown>",
       "tags": ["<mot-clé>"],
       "actions": [
-        {"title":"<titre>","details":"<contexte utile pour reprendre l'action plus tard>",
+        {"id":"<id existant de cette réunion, ou null>","title":"<titre>","details":"<contexte utile pour reprendre l'action plus tard>",
          "owner":"<responsable ou null>",
          "due_date":"<AAAA-MM-JJ ou null>","priority":"high|medium|low",
          "project":"<nom EXACT d'un projet listé ci-dessus, ou null>",

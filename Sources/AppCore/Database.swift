@@ -12,46 +12,54 @@ import MailKit
 public final class Database {
     private var db: OpaquePointer?
     public let path: URL
+    private var initializationError: Error?
 
     // SQLite copie la valeur liée immédiatement (nécessaire car nos String C sont temporaires).
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     public init(path: URL) {
         self.path = path
-        try? FileManager.default.createDirectory(
-            at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if sqlite3_open_v2(path.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil) != SQLITE_OK {
-            AppLog.shared.log("SQLite ouverture échouée : \(errmsg)", level: "ERROR")
+        // L'app doit pouvoir afficher l'erreur d'ouverture. Toute opération la propage ensuite.
+        do {
+            try FileManager.default.createDirectory(
+                at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try check(sqlite3_open_v2(path.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil))
+            try exec("PRAGMA foreign_keys = ON;")
+            try transaction {
+                try exec(Self.schema)
+                try migrate()
+            }
+        } catch {
+            initializationError = error
+            sqlite3_close(db)
+            db = nil
         }
-        exec("PRAGMA foreign_keys = ON;")
-        exec(Self.schema)
-        migrate()
     }
 
     /// Migrations additives pour les bases déjà créées (CREATE TABLE IF NOT EXISTS n'ajoute pas de
     /// colonne à une table existante).
-    private func migrate() {
-        let existing = Set(query("PRAGMA table_info(meeting)") { self.colText($0, 1) ?? "" })
+    private func migrate() throws {
+        let existing = Set(try query("PRAGMA table_info(meeting)") { self.colText($0, 1) ?? "" })
         if !existing.contains("participants") {
-            exec("ALTER TABLE meeting ADD COLUMN participants TEXT NOT NULL DEFAULT '';")
+            try exec("ALTER TABLE meeting ADD COLUMN participants TEXT NOT NULL DEFAULT '';")
         }
         if !existing.contains("user_notes") {
-            exec("ALTER TABLE meeting ADD COLUMN user_notes TEXT NOT NULL DEFAULT '';")
+            try exec("ALTER TABLE meeting ADD COLUMN user_notes TEXT NOT NULL DEFAULT '';")
         }
         if !existing.contains("project_id") {
-            exec("ALTER TABLE meeting ADD COLUMN project_id TEXT REFERENCES project(id) ON DELETE SET NULL;")
+            try exec("ALTER TABLE meeting ADD COLUMN project_id TEXT REFERENCES project(id) ON DELETE SET NULL;")
         }
-        let actionColumns = Set(query("PRAGMA table_info(action)") { self.colText($0, 1) ?? "" })
+        let actionColumns = Set(try query("PRAGMA table_info(action)") { self.colText($0, 1) ?? "" })
         if !actionColumns.contains("source_url") {
-            exec("ALTER TABLE action ADD COLUMN source_url TEXT;")
+            try exec("ALTER TABLE action ADD COLUMN source_url TEXT;")
         }
         if !actionColumns.contains("project_id") {
-            exec("ALTER TABLE action ADD COLUMN project_id TEXT REFERENCES project(id) ON DELETE SET NULL;")
+            try exec("ALTER TABLE action ADD COLUMN project_id TEXT REFERENCES project(id) ON DELETE SET NULL;")
         }
         // NULL = implication déduite du responsable ; la colonne n'est écrite qu'en cas de surcharge
         // manuelle. Les lignes existantes se classent donc toutes seules.
         if !actionColumns.contains("involvement") {
-            exec("ALTER TABLE action ADD COLUMN involvement TEXT;")
+            try exec("ALTER TABLE action ADD COLUMN involvement TEXT;")
         }
     }
 
@@ -100,61 +108,65 @@ public final class Database {
     // MARK: - API
 
     /// Toutes les réunions, plus récente en tête, tags inclus.
-    public func loadAll() -> [Meeting] {
-        var meetings = query(
+    public func loadAll() throws -> [Meeting] {
+        var meetings = try query(
             "SELECT id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error,participants,user_notes,project_id"
             + " FROM meeting ORDER BY started_at DESC") { Self.buildMeeting($0) }
             .compactMap { $0 }
-        for i in meetings.indices { meetings[i].tags = tags(for: meetings[i].id) }
+        for i in meetings.indices { meetings[i].tags = try tags(for: meetings[i].id) }
         return meetings
     }
 
     /// Insère ou met à jour une réunion (par `id`) et réécrit ses liaisons de tags.
-    public func save(_ m: Meeting) {
-        run("""
-            INSERT INTO meeting(id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error,updated_at,participants,user_notes,project_id)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(id) DO UPDATE SET title=excluded.title, started_at=excluded.started_at,
-              ended_at=excluded.ended_at, status=excluded.status, folder_path=excluded.folder_path,
-              session_dir=excluded.session_dir, transcript=excluded.transcript,
-              last_error=excluded.last_error, updated_at=excluded.updated_at,
-              participants=excluded.participants, user_notes=excluded.user_notes,
-              project_id=excluded.project_id
-            """) { s in
-            self.text(s, 1, m.id.uuidString); self.text(s, 2, m.title)
-            self.real(s, 3, m.startedAt.timeIntervalSince1970)
-            self.real(s, 4, m.endedAt?.timeIntervalSince1970)
-            self.text(s, 5, m.status.rawValue); self.text(s, 6, m.folderPath)
-            self.text(s, 7, m.sessionDirPath); self.text(s, 8, m.transcript)
-            self.text(s, 9, m.lastError); self.real(s, 10, Date().timeIntervalSince1970)
-            self.text(s, 11, Self.encodeStrings(m.participants)); self.text(s, 12, m.userNotes)
-            self.text(s, 13, m.projectID?.uuidString)
-        }
-        addTags(m.tags)
-        run("DELETE FROM meeting_tag WHERE meeting_id=?") { self.text($0, 1, m.id.uuidString) }
-        for tag in m.tags where !tag.isEmpty {
-            run("INSERT OR IGNORE INTO meeting_tag(meeting_id,tag_name) VALUES(?,?)") { s in
-                self.text(s, 1, m.id.uuidString); self.text(s, 2, tag)
+    public func save(_ m: Meeting) throws {
+        try transaction {
+            try run("""
+                INSERT INTO meeting(id,title,started_at,ended_at,status,folder_path,session_dir,transcript,last_error,updated_at,participants,user_notes,project_id)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET title=excluded.title, started_at=excluded.started_at,
+                  ended_at=excluded.ended_at, status=excluded.status, folder_path=excluded.folder_path,
+                  session_dir=excluded.session_dir, transcript=excluded.transcript,
+                  last_error=excluded.last_error, updated_at=excluded.updated_at,
+                  participants=excluded.participants, user_notes=excluded.user_notes,
+                  project_id=excluded.project_id
+                """) { s in
+                try self.text(s, 1, m.id.uuidString); try self.text(s, 2, m.title)
+                try self.real(s, 3, m.startedAt.timeIntervalSince1970)
+                try self.real(s, 4, m.endedAt?.timeIntervalSince1970)
+                try self.text(s, 5, m.status.rawValue); try self.text(s, 6, m.folderPath)
+                try self.text(s, 7, m.sessionDirPath); try self.text(s, 8, m.transcript)
+                try self.text(s, 9, m.lastError); try self.real(s, 10, Date().timeIntervalSince1970)
+                try self.text(s, 11, Self.encodeStrings(m.participants)); try self.text(s, 12, m.userNotes)
+                try self.text(s, 13, m.projectID?.uuidString)
+            }
+            try addTags(m.tags)
+            try run("DELETE FROM meeting_tag WHERE meeting_id=?") { try self.text($0, 1, m.id.uuidString) }
+            for tag in m.tags where !tag.isEmpty {
+                try run("INSERT OR IGNORE INTO meeting_tag(meeting_id,tag_name) VALUES(?,?)") { s in
+                    try self.text(s, 1, m.id.uuidString); try self.text(s, 2, tag)
+                }
             }
         }
     }
 
     /// Supprime une réunion ; ses tags liés et ses actions tombent par cascade FK (foreign_keys=ON).
-    public func delete(_ id: UUID) {
-        run("DELETE FROM meeting WHERE id=?") { self.text($0, 1, id.uuidString) }
+    public func delete(_ id: UUID) throws {
+        try run("DELETE FROM meeting WHERE id=?") { try self.text($0, 1, id.uuidString) }
     }
 
     /// Liste des tags connus, triée (alimente le sélecteur de la fenêtre de nommage).
-    public func allTags() -> [String] {
-        query("SELECT name FROM tag ORDER BY name") { self.colText($0, 0) ?? "" }
+    public func allTags() throws -> [String] {
+        try query("SELECT name FROM tag ORDER BY name") { self.colText($0, 0) ?? "" }
             .filter { !$0.isEmpty }
     }
 
     /// Enregistre de nouveaux tags (idempotent).
-    public func addTags(_ tags: [String]) {
-        for t in tags where !t.isEmpty {
-            run("INSERT OR IGNORE INTO tag(name,created_at) VALUES(?,?)") { s in
-                self.text(s, 1, t); self.real(s, 2, Date().timeIntervalSince1970)
+    public func addTags(_ tags: [String]) throws {
+        try transaction {
+            for t in tags where !t.isEmpty {
+                try run("INSERT OR IGNORE INTO tag(name,created_at) VALUES(?,?)") { s in
+                    try self.text(s, 1, t); try self.real(s, 2, Date().timeIntervalSince1970)
+                }
             }
         }
     }
@@ -165,50 +177,52 @@ public final class Database {
     /// re-traitement (on n'écrase pas un suivi manuel), le reste est rafraîchi.
     /// `involvement` est préservé pour la même raison : une surcharge manuelle survit à une relance
     /// du pipeline. `updateAction` la réécrit explicitement (comme pour le statut).
-    public func saveActions(_ items: [ActionItem]) {
-        for a in items {
-            run("""
-                INSERT INTO action(id,meeting_id,parent_id,title,details,owner,due,status,priority,created_at,source_url,project_id,involvement)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET meeting_id=excluded.meeting_id, parent_id=excluded.parent_id,
-                  title=excluded.title, details=excluded.details, owner=excluded.owner,
-                  due=excluded.due, priority=excluded.priority, source_url=excluded.source_url,
-                  project_id=excluded.project_id
-                """) { s in
-                self.text(s, 1, a.id.uuidString); self.text(s, 2, a.meetingID?.uuidString)
-                self.text(s, 3, a.parentID?.uuidString); self.text(s, 4, a.title)
-                self.text(s, 5, a.details); self.text(s, 6, a.owner)
-                self.real(s, 7, a.dueDate?.timeIntervalSince1970)
-                self.text(s, 8, a.status.rawValue); self.int(s, 9, Int32(a.priority.rawValue))
-                self.real(s, 10, Date().timeIntervalSince1970); self.text(s, 11, a.sourceURL)
-                self.text(s, 12, a.projectID?.uuidString); self.text(s, 13, a.involvement?.rawValue)
+    public func saveActions(_ items: [ActionItem]) throws {
+        try transaction {
+            for a in items {
+                try run("""
+                    INSERT INTO action(id,meeting_id,parent_id,title,details,owner,due,status,priority,created_at,source_url,project_id,involvement)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET meeting_id=excluded.meeting_id, parent_id=excluded.parent_id,
+                      title=excluded.title, details=excluded.details, owner=excluded.owner,
+                      due=excluded.due, priority=excluded.priority, source_url=excluded.source_url,
+                      project_id=excluded.project_id
+                    """) { s in
+                    try self.text(s, 1, a.id.uuidString); try self.text(s, 2, a.meetingID?.uuidString)
+                    try self.text(s, 3, a.parentID?.uuidString); try self.text(s, 4, a.title)
+                    try self.text(s, 5, a.details); try self.text(s, 6, a.owner)
+                    try self.real(s, 7, a.dueDate?.timeIntervalSince1970)
+                    try self.text(s, 8, a.status.rawValue); try self.int(s, 9, Int32(a.priority.rawValue))
+                    try self.real(s, 10, Date().timeIntervalSince1970); try self.text(s, 11, a.sourceURL)
+                    try self.text(s, 12, a.projectID?.uuidString); try self.text(s, 13, a.involvement?.rawValue)
+                }
             }
         }
     }
 
     /// Pose ou retire la surcharge d'implication (`nil` = revenir à la déduction automatique).
-    public func updateInvolvement(_ id: UUID, _ involvement: Involvement?) {
-        run("UPDATE action SET involvement=? WHERE id=?") { s in
-            self.text(s, 1, involvement?.rawValue); self.text(s, 2, id.uuidString)
+    public func updateInvolvement(_ id: UUID, _ involvement: Involvement?) throws {
+        try run("UPDATE action SET involvement=? WHERE id=?") { s in
+            try self.text(s, 1, involvement?.rawValue); try self.text(s, 2, id.uuidString)
         }
     }
 
     /// Toutes les actions persistées (rechargées au démarrage, sinon le suivi serait perdu).
-    public func loadAllActions() -> [ActionItem] {
-        query(Self.actionSelect + " ORDER BY created_at") { Self.buildAction($0) }.compactMap { $0 }
+    public func loadAllActions() throws -> [ActionItem] {
+        try query(Self.actionSelect + " ORDER BY created_at") { Self.buildAction($0) }.compactMap { $0 }
     }
 
     /// Actions ouvertes toutes réunions confondues (socle du suivi/pré-brief cross-réunion).
-    public func allOpenActions() -> [ActionItem] {
-        query(Self.actionSelect + " WHERE status IN ('todo','in-progress','blocked') ORDER BY created_at") {
+    public func allOpenActions() throws -> [ActionItem] {
+        try query(Self.actionSelect + " WHERE status IN ('todo','in-progress','blocked') ORDER BY created_at") {
             Self.buildAction($0)
         }.compactMap { $0 }
     }
 
     /// Met à jour le seul statut d'une action (édition UI, auto-résolution cross-réunion).
-    public func updateStatus(_ id: UUID, _ status: ActionStatus) {
-        run("UPDATE action SET status=? WHERE id=?") { s in
-            self.text(s, 1, status.rawValue); self.text(s, 2, id.uuidString)
+    public func updateStatus(_ id: UUID, _ status: ActionStatus) throws {
+        try run("UPDATE action SET status=? WHERE id=?") { s in
+            try self.text(s, 1, status.rawValue); try self.text(s, 2, id.uuidString)
         }
     }
 
@@ -216,23 +230,25 @@ public final class Database {
 
     /// Enregistre une revue. Retrier le même jour **remplace** la revue précédente, comme le
     /// document Markdown du Vault est réécrit.
-    public func saveMailReview(_ entries: [MailReviewEntry]) {
-        guard let date = entries.first?.reviewDate else { return }
-        run("DELETE FROM mail_item WHERE review_date=?") { self.text($0, 1, date) }
-        for e in entries {
-            run("""
-                INSERT INTO mail_item(review_date,idx,subject,sender,url,message_count,unread,flagged,
-                  bucket,importance,action,deadline,why,summary,action_id)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """) { s in
-                self.text(s, 1, e.reviewDate); self.int(s, 2, Int32(e.index))
-                self.text(s, 3, e.subject); self.text(s, 4, e.sender); self.text(s, 5, e.url)
-                self.int(s, 6, Int32(e.messageCount)); self.int(s, 7, Int32(e.unread))
-                self.int(s, 8, e.flagged ? 1 : 0)
-                self.text(s, 9, e.bucket?.rawValue); self.text(s, 10, e.importance)
-                self.text(s, 11, e.action); self.text(s, 12, e.deadline)
-                self.text(s, 13, e.why); self.text(s, 14, e.summary)
-                self.text(s, 15, e.actionID?.uuidString)
+    public func saveMailReview(_ entries: [MailReviewEntry]) throws {
+        try transaction {
+            guard let date = entries.first?.reviewDate else { return }
+            try run("DELETE FROM mail_item WHERE review_date=?") { try self.text($0, 1, date) }
+            for e in entries {
+                try run("""
+                    INSERT INTO mail_item(review_date,idx,subject,sender,url,message_count,unread,flagged,
+                      bucket,importance,action,deadline,why,summary,action_id)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """) { s in
+                    try self.text(s, 1, e.reviewDate); try self.int(s, 2, Int32(e.index))
+                    try self.text(s, 3, e.subject); try self.text(s, 4, e.sender); try self.text(s, 5, e.url)
+                    try self.int(s, 6, Int32(e.messageCount)); try self.int(s, 7, Int32(e.unread))
+                    try self.int(s, 8, e.flagged ? 1 : 0)
+                    try self.text(s, 9, e.bucket?.rawValue); try self.text(s, 10, e.importance)
+                    try self.text(s, 11, e.action); try self.text(s, 12, e.deadline)
+                    try self.text(s, 13, e.why); try self.text(s, 14, e.summary)
+                    try self.text(s, 15, e.actionID?.uuidString)
+                }
             }
         }
     }
@@ -240,8 +256,8 @@ public final class Database {
     /// Historique des revues, plus récente en tête, avec ses compteurs (agrégés en SQL — pas de
     /// table de revue séparée à tenir à jour). `immediateCount` est ce qui **reste** à traiter :
     /// une conversation dont l'action est terminée ou abandonnée en sort, comme dans la revue.
-    public func mailReviews() -> [MailReviewSummary] {
-        query("""
+    public func mailReviews() throws -> [MailReviewSummary] {
+        try query("""
             SELECT m.review_date, SUM(m.message_count), COUNT(*),
               SUM(m.bucket='immediate' AND (a.status IS NULL OR a.status NOT IN ('done','dropped'))),
               SUM(m.flagged), SUM(m.action_id IS NOT NULL)
@@ -259,12 +275,12 @@ public final class Database {
     }
 
     /// Conversations d'une revue, dans l'ordre du digest.
-    public func mailReview(date: String) -> [MailReviewEntry] {
-        query("""
+    public func mailReview(date: String) throws -> [MailReviewEntry] {
+        try query("""
             SELECT review_date,idx,subject,sender,url,message_count,unread,flagged,
               bucket,importance,action,deadline,why,summary,action_id
             FROM mail_item WHERE review_date=? ORDER BY idx
-            """, bind: { self.text($0, 1, date) }) { s in
+            """, bind: { try self.text($0, 1, date) }) { s in
             MailReviewEntry(
                 reviewDate: Self.column(s, 0) ?? date,
                 index: Int(Self.columnInt(s, 1)),
@@ -281,8 +297,8 @@ public final class Database {
     }
 
     /// Supprime une revue de l'historique (les actions créées, elles, restent dans le suivi).
-    public func deleteMailReview(date: String) {
-        run("DELETE FROM mail_item WHERE review_date=?") { self.text($0, 1, date) }
+    public func deleteMailReview(date: String) throws {
+        try run("DELETE FROM mail_item WHERE review_date=?") { try self.text($0, 1, date) }
     }
 
     private static let actionSelect =
@@ -309,8 +325,8 @@ public final class Database {
     // MARK: - Projets
 
     /// Tous les projets, actifs d'abord puis par nom.
-    public func loadProjects() -> [Project] {
-        query("SELECT id,name,status,color,owner FROM project ORDER BY status, name") { s -> Project? in
+    public func loadProjects() throws -> [Project] {
+        try query("SELECT id,name,status,color,owner FROM project ORDER BY status, name") { s -> Project? in
             guard let idStr = Self.column(s, 0), let id = UUID(uuidString: idStr),
                   let name = Self.column(s, 1) else { return nil }
             return Project(
@@ -320,27 +336,27 @@ public final class Database {
         }.compactMap { $0 }
     }
 
-    public func saveProject(_ p: Project) {
-        run("""
+    public func saveProject(_ p: Project) throws {
+        try run("""
             INSERT INTO project(id,name,status,color,owner,created_at) VALUES(?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET name=excluded.name, status=excluded.status,
               color=excluded.color, owner=excluded.owner
             """) { s in
-            self.text(s, 1, p.id.uuidString); self.text(s, 2, p.name)
-            self.text(s, 3, p.status.rawValue); self.text(s, 4, p.color)
-            self.text(s, 5, p.owner); self.real(s, 6, Date().timeIntervalSince1970)
+            try self.text(s, 1, p.id.uuidString); try self.text(s, 2, p.name)
+            try self.text(s, 3, p.status.rawValue); try self.text(s, 4, p.color)
+            try self.text(s, 5, p.owner); try self.real(s, 6, Date().timeIntervalSince1970)
         }
     }
 
     /// Supprime un projet. Ses actions et réunions restent, `project_id` repasse à NULL par le
     /// `ON DELETE SET NULL` du schéma.
-    public func deleteProject(_ id: UUID) {
-        run("DELETE FROM project WHERE id=?") { self.text($0, 1, id.uuidString) }
+    public func deleteProject(_ id: UUID) throws {
+        try run("DELETE FROM project WHERE id=?") { try self.text($0, 1, id.uuidString) }
     }
 
-    private func tags(for id: UUID) -> [String] {
-        query("SELECT tag_name FROM meeting_tag WHERE meeting_id=? ORDER BY tag_name",
-              bind: { self.text($0, 1, id.uuidString) }) { self.colText($0, 0) ?? "" }
+    private func tags(for id: UUID) throws -> [String] {
+        try query("SELECT tag_name FROM meeting_tag WHERE meeting_id=? ORDER BY tag_name",
+              bind: { try self.text($0, 1, id.uuidString) }) { self.colText($0, 0) ?? "" }
             .filter { !$0.isEmpty }
     }
 
@@ -374,56 +390,75 @@ public final class Database {
 
     // MARK: - Bas niveau
 
-    private var errmsg: String { db.map { String(cString: sqlite3_errmsg($0)) } ?? "?" }
+    private var errmsg: String { db.map { String(cString: sqlite3_errmsg($0)) } ?? "Base indisponible" }
 
-    private func exec(_ sql: String) {
-        if sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK {
-            AppLog.shared.log("SQLite exec échoué : \(errmsg) — \(sql.prefix(60))", level: "ERROR")
+    private func check(_ code: Int32) throws {
+        if let initializationError { throw initializationError }
+        guard code == SQLITE_OK else { throw DatabaseError(code: code, message: errmsg) }
+    }
+
+    /// Regroupe les écritures liées. Les opérations imbriquées participent à la transaction appelante.
+    public func transaction<T>(_ body: () throws -> T) throws -> T {
+        try check(SQLITE_OK)
+        guard sqlite3_get_autocommit(db) != 0 else { return try body() }
+        try exec("BEGIN IMMEDIATE")
+        do {
+            let value = try body()
+            try exec("COMMIT")
+            return value
+        } catch {
+            // Garder l'erreur initiale, même si SQLite a déjà annulé la transaction (disque plein).
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
         }
     }
 
-    private func run(_ sql: String, _ bind: (OpaquePointer?) -> Void = { _ in }) {
+    private func exec(_ sql: String) throws {
+        try check(SQLITE_OK)
+        try check(sqlite3_exec(db, sql, nil, nil, nil))
+    }
+
+    private func run(_ sql: String, _ bind: (OpaquePointer?) throws -> Void = { _ in }) throws {
+        try check(SQLITE_OK)
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            AppLog.shared.log("SQLite prepare échoué : \(errmsg)", level: "ERROR"); return
-        }
         defer { sqlite3_finalize(stmt) }
-        bind(stmt)
+        try check(sqlite3_prepare_v2(db, sql, -1, &stmt, nil))
+        try bind(stmt)
         let rc = sqlite3_step(stmt)
-        if rc != SQLITE_DONE && rc != SQLITE_ROW {
-            AppLog.shared.log("SQLite step échoué : \(errmsg)", level: "ERROR")
-        }
+        guard rc == SQLITE_DONE else { throw DatabaseError(code: rc, message: errmsg) }
     }
 
     private func query<T>(
         _ sql: String,
-        bind: (OpaquePointer?) -> Void = { _ in },
+        bind: (OpaquePointer?) throws -> Void = { _ in },
         row: (OpaquePointer?) -> T
-    ) -> [T] {
+    ) throws -> [T] {
+        try check(SQLITE_OK)
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            AppLog.shared.log("SQLite prepare échoué : \(errmsg)", level: "ERROR"); return []
-        }
         defer { sqlite3_finalize(stmt) }
-        bind(stmt)
+        try check(sqlite3_prepare_v2(db, sql, -1, &stmt, nil))
+        try bind(stmt)
         var out: [T] = []
-        while sqlite3_step(stmt) == SQLITE_ROW { out.append(row(stmt)) }
-        return out
+        while true {
+            let rc = sqlite3_step(stmt)
+            if rc == SQLITE_DONE { return out }
+            guard rc == SQLITE_ROW else { throw DatabaseError(code: rc, message: errmsg) }
+            out.append(row(stmt))
+        }
     }
 
-    private func text(_ s: OpaquePointer?, _ i: Int32, _ v: String) {
-        sqlite3_bind_text(s, i, v, -1, transient)
+    private func text(_ s: OpaquePointer?, _ i: Int32, _ v: String) throws {
+        try check(sqlite3_bind_text(s, i, v, -1, transient))
     }
-    private func text(_ s: OpaquePointer?, _ i: Int32, _ v: String?) {
-        if let v { sqlite3_bind_text(s, i, v, -1, transient) } else { sqlite3_bind_null(s, i) }
+    private func text(_ s: OpaquePointer?, _ i: Int32, _ v: String?) throws {
+        if let v { try text(s, i, v) } else { try check(sqlite3_bind_null(s, i)) }
     }
-    private func real(_ s: OpaquePointer?, _ i: Int32, _ v: Double?) {
-        if let v { sqlite3_bind_double(s, i, v) } else { sqlite3_bind_null(s, i) }
+    private func real(_ s: OpaquePointer?, _ i: Int32, _ v: Double?) throws {
+        if let v { try check(sqlite3_bind_double(s, i, v)) } else { try check(sqlite3_bind_null(s, i)) }
     }
-    private func int(_ s: OpaquePointer?, _ i: Int32, _ v: Int32) {
-        sqlite3_bind_int(s, i, v)
+    private func int(_ s: OpaquePointer?, _ i: Int32, _ v: Int32) throws {
+        try check(sqlite3_bind_int(s, i, v))
     }
-
     private func colText(_ s: OpaquePointer?, _ i: Int32) -> String? { Self.column(s, i) }
 
     private static func column(_ s: OpaquePointer?, _ i: Int32) -> String? {
@@ -436,4 +471,11 @@ public final class Database {
     private static func columnInt(_ s: OpaquePointer?, _ i: Int32) -> Int32 {
         sqlite3_column_int(s, i)
     }
+}
+
+/// Erreur SQLite propagée jusqu'à l'interface ; ne contient ni requête SQL ni valeurs liées.
+public struct DatabaseError: LocalizedError {
+    public let code: Int32
+    public let message: String
+    public var errorDescription: String? { "SQLite (\(code)) : \(message)" }
 }

@@ -66,8 +66,9 @@ import Foundation
     var cal = Calendar(identifier: .gregorian)
     cal.timeZone = TimeZone(identifier: "UTC")!
     let date = cal.date(from: comps)!
-    let folder = PathBuilder.meetingFolder(date: date, title: "Weekly Sync", calendar: cal)
-    #expect(folder == "2026/07/15-weekly-sync")
+    let id = UUID()
+    let folder = PathBuilder.meetingFolder(date: date, title: "Weekly Sync", meetingID: id, calendar: cal)
+    #expect(folder == "2026/07/15-weekly-sync-\(id.uuidString.lowercased())")
 }
 
 // MARK: - Filesystem

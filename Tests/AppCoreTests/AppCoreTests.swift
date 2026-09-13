@@ -60,7 +60,7 @@ import ActionKit
 
 // MARK: - Persistance des plans d'action (Phase A)
 
-@Test func actionsPersistAcrossReopen() {
+@Test func actionsPersistAcrossReopen() throws {
     let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "pepito-actions-\(UUID().uuidString)")
     let dbPath = dir.appending(path: "pepito.db")
     defer { try? FileManager.default.removeItem(at: dir) }
@@ -72,14 +72,14 @@ import ActionKit
 
     do {
         let db = Database(path: dbPath)
-        db.save(Meeting(id: meetingID, title: "Sync", folderPath: "f")) // FK: la réunion existe avant ses actions
-        db.saveActions([parent, child])
-        db.updateStatus(child.id, .done)
+        try db.save(Meeting(id: meetingID, title: "Sync", folderPath: "f")) // FK: la réunion existe avant ses actions
+        try db.saveActions([parent, child])
+        try db.updateStatus(child.id, .done)
     }
 
     // Réouverture : la base doit rendre les actions et le statut modifié.
     let db = Database(path: dbPath)
-    let all = db.loadAllActions()
+    let all = try db.loadAllActions()
     #expect(all.count == 2)
     let reloadedParent = all.first { $0.id == parent.id }
     #expect(reloadedParent?.owner == "Alice")
@@ -88,30 +88,30 @@ import ActionKit
     #expect(all.first { $0.id == child.id }?.parentID == parent.id)
 
     // updateStatus persiste ; allOpenActions exclut la terminée.
-    #expect(db.loadAllActions().first { $0.id == child.id }?.status == .done)
-    #expect(db.allOpenActions().map(\.id) == [parent.id])
+    #expect(try db.loadAllActions().first { $0.id == child.id }?.status == .done)
+    #expect(try db.allOpenActions().map(\.id) == [parent.id])
 
     // Action issue d'un mail : pas de réunion d'origine, mais un lien ouvrable persisté. Réenregistrer
     // la même action (retriage) ne duplique pas la ligne et préserve le statut suivi manuellement.
     let mailAction = ActionItem(title: "Répondre — Splunk", sourceURL: "message://%3Cm1@x%3E")
-    db.saveActions([mailAction])
-    db.updateStatus(mailAction.id, .done)
-    db.saveActions([mailAction])
-    let reloadedMail = db.loadAllActions().filter { $0.id == mailAction.id }
+    try db.saveActions([mailAction])
+    try db.updateStatus(mailAction.id, .done)
+    try db.saveActions([mailAction])
+    let reloadedMail = try db.loadAllActions().filter { $0.id == mailAction.id }
     #expect(reloadedMail.count == 1)
     #expect(reloadedMail.first?.sourceURL == "message://%3Cm1@x%3E")
     #expect(reloadedMail.first?.meetingID == nil)
     #expect(reloadedMail.first?.status == .done)
 
     // Supprimer la réunion efface ses actions par cascade FK (pas les actions de mail).
-    db.delete(meetingID)
-    #expect(db.loadAll().isEmpty)
-    #expect(db.loadAllActions().map(\.id) == [mailAction.id])
+    try db.delete(meetingID)
+    #expect(try db.loadAll().isEmpty)
+    #expect(try db.loadAllActions().map(\.id) == [mailAction.id])
 }
 
 // MARK: - Historique des revues de mails
 
-@Test func mailReviewsPersistAndReplaceOnRetriage() {
+@Test func mailReviewsPersistAndReplaceOnRetriage() throws {
     let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "pepito-mailrev-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: dir) }
     let db = Database(path: dir.appending(path: "pepito.db"))
@@ -126,13 +126,13 @@ import ActionKit
     }
 
     let actionID = UUID()
-    db.saveMailReview([
+    try db.saveMailReview([
         entry("2026-07-26", 1, bucket: .immediate, flagged: true, actionID: actionID, messages: 3),
         entry("2026-07-26", 2, bucket: nil),                    // non classée → archivable
     ])
-    db.saveMailReview([entry("2026-07-19", 1, bucket: .week)])
+    try db.saveMailReview([entry("2026-07-19", 1, bucket: .week)])
 
-    let reloaded = db.mailReview(date: "2026-07-26")
+    let reloaded = try db.mailReview(date: "2026-07-26")
     #expect(reloaded.count == 2)
     #expect(reloaded[0].bucket == .immediate)
     #expect(reloaded[0].actionID == actionID)
@@ -140,7 +140,7 @@ import ActionKit
     #expect(reloaded[1].bucket == nil)                          // NULL relu comme « archivable »
 
     // Historique : plus récent en tête, compteurs agrégés.
-    let history = db.mailReviews()
+    let history = try db.mailReviews()
     #expect(history.map(\.date) == ["2026-07-26", "2026-07-19"])
     #expect(history[0].threadCount == 2)
     #expect(history[0].messageCount == 4)
@@ -149,18 +149,18 @@ import ActionKit
     #expect(history[0].actionCount == 1)
 
     // Action traitée → la conversation sort du compteur « à traiter » de la pastille.
-    db.saveActions([ActionItem(id: actionID, title: "Répondre", status: .done)])
-    db.updateStatus(actionID, .done)                            // saveActions préserve le statut
-    #expect(db.mailReviews()[0].immediateCount == 0)
-    #expect(db.mailReviews()[0].threadCount == 2)               // la revue, elle, garde ses conversations
+    try db.saveActions([ActionItem(id: actionID, title: "Répondre", status: .done)])
+    try db.updateStatus(actionID, .done)                            // saveActions préserve le statut
+    #expect(try db.mailReviews()[0].immediateCount == 0)
+    #expect(try db.mailReviews()[0].threadCount == 2)               // la revue, elle, garde ses conversations
 
     // Retrier le même jour remplace la revue au lieu de l'empiler.
-    db.saveMailReview([entry("2026-07-26", 1, bucket: .week)])
-    #expect(db.mailReview(date: "2026-07-26").count == 1)
-    #expect(db.mailReviews().count == 2)
+    try db.saveMailReview([entry("2026-07-26", 1, bucket: .week)])
+    #expect(try db.mailReview(date: "2026-07-26").count == 1)
+    #expect(try db.mailReviews().count == 2)
 
-    db.deleteMailReview(date: "2026-07-26")
-    #expect(db.mailReviews().map(\.date) == ["2026-07-19"])
+    try db.deleteMailReview(date: "2026-07-26")
+    #expect(try db.mailReviews().map(\.date) == ["2026-07-19"])
 }
 
 // MARK: - Export externe (Phase E)
@@ -304,7 +304,7 @@ import ActionKit
 
 // MARK: - Projets et implication (migration incluse)
 
-@Test func projectsAndInvolvementPersist() {
+@Test func projectsAndInvolvementPersist() throws {
     let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "pepito-projects-\(UUID().uuidString)")
     let dbPath = dir.appending(path: "pepito.db")
     defer { try? FileManager.default.removeItem(at: dir) }
@@ -315,33 +315,33 @@ import ActionKit
 
     do {
         let db = Database(path: dbPath)
-        db.saveProject(project)
-        db.save(Meeting(id: meetingID, title: "Sync", projectID: project.id, folderPath: "f"))
-        db.saveActions([action])
-        db.updateInvolvement(action.id, .follow)
+        try db.saveProject(project)
+        try db.save(Meeting(id: meetingID, title: "Sync", projectID: project.id, folderPath: "f"))
+        try db.saveActions([action])
+        try db.updateInvolvement(action.id, .follow)
     }
 
     let db = Database(path: dbPath)
-    #expect(db.loadProjects().map(\.name) == ["Migration SI"])
-    #expect(db.loadProjects().first?.color == "blue")
-    #expect(db.loadAll().first?.projectID == project.id)
-    let reloaded = db.loadAllActions().first
+    #expect(try db.loadProjects().map(\.name) == ["Migration SI"])
+    #expect(try db.loadProjects().first?.color == "blue")
+    #expect(try db.loadAll().first?.projectID == project.id)
+    let reloaded = try db.loadAllActions().first
     #expect(reloaded?.projectID == project.id)
     #expect(reloaded?.involvement == .follow)
 
     // Re-traitement du pipeline : la surcharge d'implication survit, comme le statut.
-    db.saveActions([action])
-    #expect(db.loadAllActions().first?.involvement == .follow)
+    try db.saveActions([action])
+    #expect(try db.loadAllActions().first?.involvement == .follow)
 
     // Supprimer un projet ne supprime pas ses actions : project_id repasse simplement à NULL.
-    db.deleteProject(project.id)
-    #expect(db.loadProjects().isEmpty)
-    #expect(db.loadAllActions().count == 1)
-    #expect(db.loadAllActions().first?.projectID == nil)
-    #expect(db.loadAll().first?.projectID == nil)
+    try db.deleteProject(project.id)
+    #expect(try db.loadProjects().isEmpty)
+    #expect(try db.loadAllActions().count == 1)
+    #expect(try db.loadAllActions().first?.projectID == nil)
+    #expect(try db.loadAll().first?.projectID == nil)
 }
 
-@Test func migrationAddsColumnsToAPreExistingDatabase() {
+@Test func migrationAddsColumnsToAPreExistingDatabase() throws {
     let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "pepito-migrate-\(UUID().uuidString)")
     let dbPath = dir.appending(path: "pepito.db")
     defer { try? FileManager.default.removeItem(at: dir) }
@@ -354,7 +354,7 @@ import ActionKit
 
     // L'ouverture normale migre : l'action historique remonte, non classée et sans surcharge.
     let db = Database(path: dbPath)
-    let all = db.loadAllActions()
+    let all = try db.loadAllActions()
     #expect(all.count == 1)
     #expect(all.first?.title == "Action héritée")
     #expect(all.first?.projectID == nil)

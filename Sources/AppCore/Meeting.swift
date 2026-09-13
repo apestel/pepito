@@ -44,7 +44,7 @@ public struct Meeting: Sendable, Identifiable, Codable, Equatable {
     /// Projet de la réunion, choisi dès le démarrage (rapproché du titre de l'événement calendrier)
     /// et hérité par ses actions. Cible aussi le pré-brief, qui ne peut pas attendre les tags de fin.
     public var projectID: UUID?
-    /// Dossier du Vault (`AAAA/MM/JJ-slug`).
+    /// Dossier du Vault (`AAAA/MM/JJ-slug-UUID` pour les nouvelles réunions, ancien chemin conservé).
     public var folderPath: String
     /// Dossier des fichiers audio de la session (pour reprendre une transcription).
     public var sessionDirPath: String?
