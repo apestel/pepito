@@ -11,7 +11,8 @@ charges initial.
 - [x] Sources autorisées, imports, livrables, téléchargements contrôlés et conflits de statut.
 - [x] Espace Missions, conversation persistante, validations, arrêt et reprise.
 - [x] Tests unitaires, diagnostics VM/navigateur réels et bundle release signé.
-- [ ] Validation complète avec l’endpoint utilisateur : token refusé (HTTP 401).
+- [x] Aller-retour Swift → Pi → outil → réponse avec l’endpoint actif de Pépito.
+- [ ] Validation du scénario métier complet avec l’endpoint utilisateur.
 - [ ] QA d’enregistrement réel et mesure des ressources sous charge.
 
 Architecture, limites et commandes : [AGENTIC.md](AGENTIC.md).

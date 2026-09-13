@@ -75,6 +75,14 @@ codesign --force --sign - --entitlements Packaging/Agent.entitlements .build/rel
 ```
 
 Le diagnostic endpoint lit le token configuré mais ne transmet aucune donnée métier.
+Sans arguments supplémentaires, il utilise les réglages **enregistrés sur disque**, qui peuvent
+différer des valeurs affichées dans une fenêtre Réglages non enregistrée. Il affiche toujours
+le modèle et l’endpoint testés. Pour vérifier les valeurs actives sans les enregistrer :
+
+```sh
+.build/release/PepitoAgentProbe --endpoint-test .build/Pepito.app/Contents/Resources/AgentRuntime <endpoint> <modele>
+```
+
 Le diagnostic navigateur utilise uniquement `https://example.com` et enregistre une capture
 dans le cache de test. Les diagnostics VM ne sont pas exécutés en CI.
 
@@ -84,8 +92,11 @@ Le contrôle UI dans un bundle et une base séparés a vérifié le rendu des co
 la saisie et l’import d’un fichier. Les tests couvrent JSONL fragmenté, refus, annulation, sortie du processus, reprise de session,
 non-persistance du token, récupération après interruption et conflit avec une édition humaine.
 
-Le test avec le fournisseur configuré a reçu HTTP 401 : le token a été refusé. Le scénario
-métier complet avec ce fournisseur reste donc à valider après correction de l’authentification.
+Correction du diagnostic : le premier HTTP 401 concernait les réglages enregistrés sur disque,
+qui pointaient vers un autre fournisseur que celui affiché dans Pépito. Le client natif confirme
+HTTP 200 avec la configuration affichée ; le token utilisateur est valide. Le parcours réel
+Swift → Pi → outil → réponse est également confirmé avec cette même configuration. Le scénario
+métier complet reste à valider.
 La QA avec un enregistrement réel et la mesure des ressources pendant cet enregistrement
 restent à effectuer ; aucun enregistrement utilisateur n’a été démarré pour ces tests.
 

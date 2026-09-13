@@ -5,9 +5,18 @@ import SandboxKit
 /// Diagnostic opt-in, sans accès aux données de l'utilisateur.
 @main struct Probe {
     static func main() async throws {
-        if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--endpoint-test" {
-            try await AppCore.testAgentRuntime(runtime: URL(fileURLWithPath: CommandLine.arguments[2]))
-            print("Endpoint configuré : aller-retour agentique confirmé")
+        if [3, 5].contains(CommandLine.arguments.count), CommandLine.arguments[1] == "--endpoint-test" {
+            var settings = SettingsStore.defaultLocation().load()
+            if CommandLine.arguments.count == 5 {
+                settings.aiBaseURL = CommandLine.arguments[3]
+                settings.aiModel = CommandLine.arguments[4]
+                print("Configuration explicite (aucune modification des réglages)")
+            } else {
+                print("Configuration enregistrée sur disque ; elle peut différer des réglages ouverts dans Pépito")
+            }
+            print("Test de \(settings.aiModel) sur \(settings.aiBaseURL)")
+            try await AppCore.testAgentRuntime(runtime: URL(fileURLWithPath: CommandLine.arguments[2]),settings:settings)
+            print("Aller-retour agentique confirmé")
             return
         }
         if CommandLine.arguments.count == 5, CommandLine.arguments[1] == "--browser-test" {

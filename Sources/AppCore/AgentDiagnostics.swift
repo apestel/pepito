@@ -4,8 +4,8 @@ import SandboxKit
 
 extension AppCore {
     /// Test réel du protocole d'outils, sans fournir de donnée métier au modèle.
-    @MainActor public static func testAgentRuntime(runtime: URL) async throws {
-        let settings = SettingsStore.defaultLocation().load()
+    @MainActor public static func testAgentRuntime(runtime: URL, settings: Settings? = nil) async throws {
+        let settings = settings ?? SettingsStore.defaultLocation().load()
         let token = try KeychainTokenStore().token(for: "default") ?? ""
         let dir = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
