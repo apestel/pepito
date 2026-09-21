@@ -120,7 +120,8 @@ public actor Sandbox {
         return try await withTaskCancellationHandler {
             let data = await Task.detached {
                 let data = stdout.fileHandleForReading.readDataToEndOfFile()
-                p.waitUntilExit()
+                // EOF delivers the complete protocol response. Waiting again can stall
+                // in Foundation’s process run loop even after the child has exited.
                 return data
             }.value
             try Task.checkCancellation()

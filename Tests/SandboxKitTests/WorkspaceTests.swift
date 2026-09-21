@@ -31,3 +31,29 @@ import Testing
         try await vm.script(language: "shell", code: "echo unsafe")
     }
 }
+
+@Test func scriptReturnsCompleteResponseWithoutWaitingForProcessTeardown() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    let runtime = root.appending(path: "runtime")
+    try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let node = runtime.appending(path: "node")
+    // A complete response and EOF must release the caller independently of process teardown.
+    try Data("""
+        #!/bin/sh
+        read request
+        printf '%s\\n' '{"stdout":"42","stderr":"","exitCode":0,"duration":0}'
+        exec 1>&-
+        exec /bin/sleep 3
+        """.utf8).write(to: node)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: node.path)
+    try Data().write(to: runtime.appending(path: "script-runner.mjs"))
+    let sandbox = Sandbox(root: root.appending(path: "work"), runtime: runtime)
+    try await sandbox.start()
+    let start = ContinuousClock.now
+    let result = try await sandbox.script(language: "python", code: "print(42)")
+    #expect(result.stdout == "42")
+    #expect(result.exitCode == 0)
+    #expect(start.duration(to: .now) < .seconds(2))
+    await sandbox.stop()
+}

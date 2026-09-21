@@ -144,7 +144,8 @@ final class MissionBrowser: NSObject, WKNavigationDelegate {
                 try input.fileHandleForWriting.write(contentsOf: JSONEncoder().encode(request))
                 try input.fileHandleForWriting.close()
                 let data = output.fileHandleForReading.readDataToEndOfFile()
-                p.waitUntilExit()
+                // EOF delivers the complete protocol response. Waiting again can stall
+                // in Foundation’s process run loop even after the child has exited.
                 return try JSONDecoder().decode([String: AgentValue].self, from: data)
             }.value
         } catch { return ["error": .string(error.localizedDescription)] }
