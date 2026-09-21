@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 export function profile(root, runtime, network = false) {
   const quote = s => JSON.stringify(s);
   const reads = ['/System/Library', '/System/Volumes/Preboot/Cryptexes/OS', '/usr/lib', '/usr/bin', '/usr/share', '/bin', '/sbin',
-    '/Library/Developer', '/Library/Apple', '/Applications/Xcode.app/Contents/Developer', root, runtime];
+    '/Library/Developer', '/Library/Apple', '/Applications/Xcode.app/Contents/Developer', root, runtime]
+    .map(p => existsSync(p) ? realpathSync(p) : p);
   return `(version 1)
 (deny default)
 (allow process-exec process-fork)

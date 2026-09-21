@@ -10,6 +10,10 @@ test('profile grants network only on explicit request',()=>{
   assert(!profile('/private/tmp/task','/runtime').includes('(allow network-outbound)'));
   assert(profile('/private/tmp/task','/runtime',true).includes('(allow network-outbound)'));
 });
+test('profile resolves the installed Xcode symlink',()=>{
+  const developer='/Applications/Xcode.app/Contents/Developer';
+  if(existsSync(developer)) assert(profile('/private/tmp/task','/runtime').includes(`(subpath ${JSON.stringify(realpathSync(developer))})`));
+});
 test('native isolation, scratchpad persistence, network grant and timeout', {skip:process.platform!=='darwin'},async()=>{
   const base=realpathSync(mkdtempSync(join(tmpdir(),'pepito-isolation-')));
   const root=join(base,'work');const {mkdirSync}=await import('node:fs');mkdirSync(root);

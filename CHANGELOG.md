@@ -36,7 +36,9 @@ une version MINOR peut apporter une rupture (schéma SQLite, format du Vault).
   retraitements ; conservation des statuts et de l’implication modifiés manuellement.
 - Ajustements du traitement audio et du budget de transcript transmis à l’IA ; persistance
   des consignes de synthèse.
-- Validation locale : 141 tests Swift et 8 tests du runtime, dont l’isolation native, la
+- Les chemins autorisés par Seatbelt sont résolus pour prendre en charge les installations
+  Xcode accessibles par un lien symbolique, notamment sur les runners GitHub.
+- Validation locale : 141 tests Swift et 9 tests du runtime, dont l’isolation native, la
   persistance du scratchpad, les permissions réseau, l’annulation et les limites d’exécution.
 
 ### Limites connues
