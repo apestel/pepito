@@ -44,6 +44,8 @@ public struct Settings: Sendable, Codable, Equatable {
     public var userName: String
     /// Collaborateurs dont je suis les actions sans les porter (→ « à suivre »).
     public var teamMembers: [String]
+    /// Accès Internet des outils de conversation, sauf surcharge par conversation.
+    public var missionInternetEnabled: Bool
 
     public init(
         aiBaseURL: String = "https://api.openai.com/v1",
@@ -58,7 +60,8 @@ public struct Settings: Sendable, Codable, Equatable {
         mailPrompt: String = PromptTemplate.defaultMailPrompt,
         mailLimit: Int = 300,
         userName: String = "",
-        teamMembers: [String] = []
+        teamMembers: [String] = [],
+        missionInternetEnabled: Bool = true
     ) {
         self.aiBaseURL = aiBaseURL
         self.aiModel = aiModel
@@ -73,6 +76,7 @@ public struct Settings: Sendable, Codable, Equatable {
         self.mailLimit = mailLimit
         self.userName = userName
         self.teamMembers = teamMembers
+        self.missionInternetEnabled = missionInternetEnabled
     }
 
     /// Décodage tolérant : un champ absent (ancien fichier) prend sa valeur par défaut, plutôt que
@@ -93,6 +97,7 @@ public struct Settings: Sendable, Codable, Equatable {
         mailLimit = try c.decodeIfPresent(Int.self, forKey: .mailLimit) ?? d.mailLimit
         userName = try c.decodeIfPresent(String.self, forKey: .userName) ?? d.userName
         teamMembers = try c.decodeIfPresent([String].self, forKey: .teamMembers) ?? d.teamMembers
+        missionInternetEnabled = try c.decodeIfPresent(Bool.self, forKey: .missionInternetEnabled) ?? d.missionInternetEnabled
     }
 
     public static let `default` = Settings()

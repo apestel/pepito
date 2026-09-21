@@ -33,8 +33,29 @@ noyau téléchargé ou image Linux. Un superviseur Node de confiance construit u
 personnelles. Les lectures sont limitées au scratchpad et aux composants système/runtime
 nécessaires ; les écritures au scratchpad. Aucun repli non isolé n’est prévu en cas d’échec.
 
-Python utilise l’interpréteur des outils Apple ; JavaScript utilise Node embarqué ; le shell
-est `/bin/bash` sans profils utilisateur. Les bibliothèques Python tierces ne sont pas embarquées.
+Python utilise **Pyodide 314.0.7 / CPython 3.14.2 WebAssembly**, chargé par Node embarqué.
+Aucun Python Apple/Homebrew n’est utilisé. Le scratchpad est monté dans `/workspace` ; ses
+fichiers persistent, l’interpréteur est recréé à chaque appel. NumPy, pandas, matplotlib,
+Pillow et micropip (avec leurs dépendances) sont embarqués et vérifiés par SHA-256 au build.
+Le socle bureautique ajoute **XlsxWriter 3.2.9** (création Excel), **openpyxl 3.1.5**
+(lecture/modification Excel), **python-docx 1.2.0** (Word) et **python-pptx 1.0.2**
+(PowerPoint), avec lxml WASM et leurs dépendances. Les wheels Python universels sont
+verrouillés dans `Runtime/python-packages.json` (URL, version, SHA-256), puis inscrits au
+lockfile Pyodide du bundle pour charger automatiquement `xlsxwriter`, `openpyxl`, `docx`
+et `pptx` hors ligne. Pas de recalcul des formules Excel ni de rendu visuel Office.
+Le build génère `python-environment.txt` à partir des wheels effectivement embarqués et
+vérifiés : versions Python/Pyodide, bibliothèques, imports et descriptions du manifeste.
+Swift injecte ce fichier dans le system prompt à chaque démarrage de session, sans liste
+recopiée dans le code. Un fichier absent bloque le démarrage plutôt que d’annoncer un
+inventaire potentiellement faux. Ajouter un paquet au manifeste puis reconstruire suffit.
+Les imports Pyodide sont chargés automatiquement ; les wheels supplémentaires du catalogue
+sont téléchargés si Internet est permis, puis conservés dans `.pyodide-cache` par mission.
+`await micropip.install(...)` permet les paquets compatibles ; les installations hors catalogue
+ne constituent pas un environnement persistant garanti. Ni pip natif ni uv ne sont fournis.
+Pour HTTP, utiliser `await pyodide.http.pyfetch(...)`. Les subprocess Python ne sont pas disponibles.
+JavaScript utilise Node embarqué ; le shell est `/bin/bash` sans profils utilisateur.
+Le pont JS minimal expose les API nécessaires à HTTP ; Seatbelt reste la frontière de sécurité,
+y compris pour les appels traversant les ponts JavaScript.
 La sandbox n’est pas une VM : elle partage le noyau macOS et dépend du mécanisme Seatbelt,
 déprécié par Apple. Une commande dispose de 60 secondes, sa sortie est limitée à 4 Mio, avec
 limites CPU et taille de fichier. Le superviseur termine le groupe de processus à l’arrêt,
@@ -48,23 +69,26 @@ Les livrables texte créés directement par `write_artifact` sont limités à 1 
 
 ### Internet
 
-Le réseau des scripts est bloqué par défaut. Le modèle peut demander `network: true` pour
-`curl`, DuckDuckGo ou un téléchargement. Si **Autoriser Internet aux scripts** est activé pour
-la mission, cet appel est permis ; sinon, l’utilisateur valide ce script précis. La demande
-et la vérification indiquent que le script peut transmettre le contenu de son scratchpad.
-Le réseau est alors disponible aux processus de cet appel, y compris le réseau local ;
-cela n’élargit pas leurs droits de lecture/écriture. L’autorisation ne copie aucun secret.
+Le réglage global **Internet disponible par défaut** est activé par défaut, y compris lors de
+la migration des anciens réglages. Chaque conversation peut surcharger ce choix, ou revenir
+au réglage global. Les anciens refus explicites restent respectés (`scriptInternet: false`).
+Ce réglage couvre scripts, téléchargements et navigateur ; il ne coupe pas l’endpoint IA configuré.
+Les scripts héritent du droit effectif sans confirmation ponctuelle. `network: false` restreint
+un appel hors ligne ; `network: true` ne peut jamais contourner une conversation désactivée.
+Le réseau autorisé comprend le réseau local sans élargir les droits fichiers ni transmettre de secrets
+par l’environnement. La révocation du réglage global interrompt les opérations des conversations
+concernées et ferme leur navigateur.
 
 `download_file` conserve son contrôleur HTTP séparé : DNS épinglé, réseau privé refusé,
-pas de redirection, 8 Mio maximum et validation humaine. Pi ne reçoit que les outils Pépito,
+pas de redirection et 8 Mio maximum. Pi ne reçoit que les outils Pépito,
 sans shell hôte, extensions ou configuration personnelle. Son token IA arrive par stdin.
 
 ### Navigateur
 
 Le navigateur utilise **WebKit**, avec une session éphémère indépendante de Safari. Les pages
 s’affichent directement dans le panneau. **Prendre la main** permet de cliquer, remplir un
-formulaire et naviguer ; le modèle cesse alors de piloter. Les actions du modèle sont soumises
-à confirmation. Les navigations automatisées restent sur les domaines explicitement ouverts,
+formulaire et naviguer ; le modèle cesse alors de piloter. Les clics et saisies du modèle sont soumis
+à confirmation ; ouvrir une page ou revenir en arrière suit le réglage Internet. Les navigations automatisées restent sur les domaines explicitement ouverts,
 en HTTP(S), avec GET/HEAD ; les envois de formulaire nécessitent le contrôle manuel.
 Les sous-ressources utilisent le réseau WebKit normal, pas le contrôleur DNS de `download_file`.
 Les fenêtres secondaires et schémas externes sont refusés. Aucun profil de connexion n’est partagé. La page reste consultable à la fin du tour ; la session est remplacée lors de l’ouverture du navigateur d’une autre mission ou à la fermeture de l’app.
@@ -73,7 +97,7 @@ Les fenêtres secondaires et schémas externes sont refusés. Aucun profil de co
 
 `./build-app.sh release` vérifie l’archive Node 24.21.0 par SHA-256, installe le verrou npm
 sans scripts d’installation, assemble et signe le bundle. Aucun téléchargement de VM n’a lieu.
-Python 3 et npm servent à construire ; Xcode/Command Line Tools fournit Python pour les scripts.
+Python 3 et npm servent seulement à construire. Le bundle fournit le runtime Python et ses bibliothèques.
 
 ```sh
 swift test
@@ -102,3 +126,12 @@ existantes ; il ne copie pas le runtime de Bionic et ne prétend pas utiliser so
 Une mission fonctionne à la fois, tant que le Mac et Pépito restent actifs. Les automatisations,
 sous-agents de revue et plugins tiers ne sont pas ajoutés. L’onglet Vérification affiche les
 contrôles effectifs et décisions humaines, sans prétendre qu’un second modèle a audité le code.
+
+### Recherche npm (21 septembre 2026)
+
+Le plugin JavaScript livré avec Bionic utilise Deno et interdit les modules externes : il ne
+fournit pas de gestion npm. Son runtime Python embarque Pyodide et des wheels fixes.
+Le runtime de dépendances Codex installé fournit Node et pnpm via un wrapper utilisant son
+Node absolu. Pour Pépito, une future gestion npm peut extraire npm/npx de l’archive Node déjà
+épinglée et garder `package.json`, lockfile, `node_modules` et cache dans chaque scratchpad.
+Cette gestion npm n’est pas ajoutée par l’intégration Pyodide.

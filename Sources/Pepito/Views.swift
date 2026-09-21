@@ -166,15 +166,17 @@ struct MainView: View {
                         Button { app.beginMission() } label: {
                             Label("Nouvelle mission", systemImage: "plus")
                         }.buttonStyle(.plain).selectionDisabled()
-                        ForEach(app.missions.items) { mission in
-                            Button { app.missions.selectedID = mission.id } label: {
-                                HStack {
-                                    Text(mission.title).lineLimit(2)
-                                    Spacer(minLength: 2)
-                                    if app.missions.runningID == mission.id { ProgressView().controlSize(.mini) }
-                                }.padding(.vertical, 4)
-                                    .foregroundStyle(app.missions.selectedID == mission.id ? Color.accentColor : .primary)
-                            }.buttonStyle(.plain).selectionDisabled()
+                        ForEach(app.missions.history) { mission in
+                            MissionHistoryRow(missions: app.missions, mission: mission)
+                                .selectionDisabled()
+                        }
+                        if !app.missions.archived.isEmpty {
+                            DisclosureGroup("Archives") {
+                                ForEach(app.missions.archived) { mission in
+                                    MissionHistoryRow(missions: app.missions, mission: mission)
+                                        .selectionDisabled()
+                                }
+                            }
                         }
                     }
                 }
@@ -230,6 +232,7 @@ struct MainView: View {
                 }
             }
             .navigationTitle("Pépito")
+            .tint(.gray)
             .frame(minWidth: 240)
         } detail: {
             if app.selection == .missions {
@@ -1591,6 +1594,11 @@ struct AdminView: View {
 
     var body: some View {
         Form {
+            Section("Conversations") {
+                Toggle("Internet disponible par défaut", isOn: $app.settings.missionInternetEnabled)
+                Text("Autorise les scripts, téléchargements et le navigateur. Chaque conversation peut désactiver Internet. Ce réglage ne coupe pas la connexion au modèle IA configuré.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("IA générative (OpenAI-compatible)") {
                 TextField("Endpoint", text: $app.settings.aiBaseURL)
                     .help("URL de base de l'API OpenAI-compatible (ex. https://api.openai.com/v1). Fonctionne aussi avec Azure, Ollama, LM Studio, vLLM, OpenRouter…")

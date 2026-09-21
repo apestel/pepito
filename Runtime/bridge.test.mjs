@@ -7,9 +7,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 
-for (const outcome of ['success','refused','cancelled']) test('Pi round trip: '+outcome, {timeout:30000}, async () => {
+for (const outcome of ['success','refused','cancelled','steered','late-steered','multi-steered']) test('Pi round trip: '+outcome, {timeout:30000}, async () => {
   const dir=await mkdtemp(join(tmpdir(),'pepito-pi-'));
-  let calls=0;
+  let calls=0, applied=0, lateSent=false;
   const server=createServer(async(req,res)=>{
     let raw=''; for await (const chunk of req) raw+=chunk;
     const body=JSON.parse(raw); calls++;
@@ -21,6 +21,8 @@ for (const outcome of ['success','refused','cancelled']) test('Pi round trip: '+
       chunk({role:'assistant',tool_calls:[{index:0,id:'probe-1',type:'function',function:{name:'probe',arguments:'{"value":"hello"}'}}]});
       chunk({},'tool_calls');
     } else {
+      if (outcome==='steered' || outcome==='multi-steered' || calls===3) assert.ok(body.messages.some(m=>m.role==='user' && JSON.stringify(m.content).includes('Use a concise answer')));
+      if(outcome==='multi-steered' && calls===3) assert.ok(body.messages.some(m=>m.role==='user' && JSON.stringify(m.content).includes('Also mention the budget')));
       assert.ok(body.messages.some(m=>m.role==='tool' && m.content.includes(outcome==='refused'?'Refus utilisateur':'hello')));
       chunk({role:'assistant',content:'Vérifié\u2028correctement'}); chunk({},'stop');
     }
@@ -40,11 +42,17 @@ for (const outcome of ['success','refused','cancelled']) test('Pi round trip: '+
           if(e.type==='error') { if(outcome==='cancelled' && /abort|annul/i.test(e.text)) resolve(); else reject(new Error(e.text)); }
           if(e.type==='ready') send({type:'prompt',text:'Call probe with hello then report.'});
           if(e.type==='tool') {
+            if(['steered','multi-steered'].includes(outcome)) send({type:'steer',id:'steering-1',text:'Use a concise answer'});
+            if(outcome==='multi-steered') send({type:'steer',id:'steering-2',text:'Also mention the budget'});
             if(outcome==='cancelled') send({type:'abort'});
             else send({type:'tool_result',id:e.id,...(outcome==='refused'?{error:'Refus utilisateur'}:{text:e.arguments.value})});
           }
           if(e.type==='delta') output+=e.text;
-          if(e.type==='done') resolve();
+          if(e.type==='steering_applied') { assert.equal(e.id,`steering-${applied+1}`); applied++; }
+          if(e.type==='done') {
+            if(outcome==='late-steered' && !lateSent) { lateSent=true; send({type:'steer',id:'steering-1',text:'Use a concise answer'}); }
+            else resolve();
+          }
         }
       });
       child.on('exit',code=>reject(new Error(`Exit ${code}: ${errors}`)));
@@ -53,8 +61,9 @@ for (const outcome of ['success','refused','cancelled']) test('Pi round trip: '+
     // Split framing deliberately.
     child.stdin.write(start.slice(0,31)); child.stdin.write(start.slice(31));
     await done;
-    assert.equal(calls,outcome==='cancelled'?1:2);
-    assert.equal(output,outcome==='cancelled'?'':'Vérifié\u2028correctement');
+    assert.equal(calls,outcome==='cancelled'?1:(['late-steered','multi-steered'].includes(outcome)?3:2));
+    assert.equal(applied,outcome==='multi-steered'?2:(['steered','late-steered'].includes(outcome)?1:0));
+    assert.equal(output,outcome==='cancelled'?'':'Vérifié\u2028correctement'.repeat(['late-steered','multi-steered'].includes(outcome)?2:1));
     for (const path of await readdir(dir,{recursive:true,withFileTypes:true})) if(path.isFile()) {
       assert.ok(!(await readFile(join(path.parentPath,path.name),'utf8')).includes('test-token'));
     }

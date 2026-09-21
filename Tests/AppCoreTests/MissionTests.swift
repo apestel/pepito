@@ -89,3 +89,81 @@ import Testing
     #expect(legacy.scriptInternet == nil)
     #expect(legacy.messages[0].tool == nil)
 }
+
+@Test @MainActor func missionHistoryManagementPersistsAndKeepsSelectionValid() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let coordinator = MissionCoordinator(root: root)
+    coordinator.create()
+    let first = try #require(coordinator.selectedID)
+    coordinator.create()
+    let second = try #require(coordinator.selectedID)
+    coordinator.rename(first, to: "  Comité  ")
+    coordinator.rename(first, to: " \n ")
+    coordinator.togglePin(first)
+    #expect(coordinator.history.first?.id == first)
+    let reloaded = MissionCoordinator(root: root)
+    #expect(reloaded.history.first?.title == "Comité")
+    #expect(reloaded.history.first?.hasCustomTitle == true)
+    coordinator.setArchived(second, true)
+    #expect(coordinator.selectedID == first)
+    #expect(coordinator.history.count == 1)
+    #expect(MissionCoordinator(root: root).archived.map(\.id) == [second])
+    coordinator.setArchived(second, false)
+    #expect(coordinator.history.count == 2)
+    coordinator.delete(first)
+    #expect(coordinator.selectedID == second)
+    #expect(!FileManager.default.fileExists(atPath: coordinator.store.directory(first).path))
+    #expect(MissionCoordinator(root: root).items.map(\.id) == [second])
+    coordinator.delete(second)
+    #expect(coordinator.selectedID == nil)
+}
+
+@Test func pendingSteeringSurvivesInterruptedMission() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = MissionStore(root: root)
+    var mission = Mission(title: "Steering")
+    mission.state = "running"
+    mission.pendingSteering = [MissionMessage(role: "user", text: "Concentre-toi sur le budget.")]
+    try store.save(mission)
+    let restored = try #require(store.load().first)
+    #expect(restored.state == "interrupted")
+    #expect(restored.pendingSteering?.first?.id == mission.pendingSteering?.first?.id)
+    #expect(restored.pendingSteering?.first?.text == "Concentre-toi sur le budget.")
+    #expect(restored.messages.allSatisfy { $0.role != "user" })
+}
+
+@Test func internetDefaultsAndConversationOverridesSurviveMigration() throws {
+    let oldSettings = try JSONDecoder().decode(Settings.self, from: Data("{}".utf8))
+    #expect(oldSettings.missionInternetEnabled)
+    var settings = oldSettings
+    settings.missionInternetEnabled = false
+    let restored = try JSONDecoder().decode(Settings.self, from: JSONEncoder().encode(settings))
+    #expect(!restored.missionInternetEnabled)
+    var mission = Mission(title: "Internet")
+    #expect(mission.internetEnabled(default: true))
+    #expect(!mission.internetEnabled(default: false))
+    mission.scriptInternet = false
+    let saved = try JSONDecoder().decode(Mission.self, from: JSONEncoder().encode(mission))
+    #expect(!saved.internetEnabled(default: true))
+    mission.scriptInternet = true
+    #expect(mission.internetEnabled(default: false))
+}
+
+@Test @MainActor func internetPolicyRejectsDisabledConversations() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let coordinator = MissionCoordinator(root: root)
+    coordinator.create()
+    let id = try #require(coordinator.selectedID)
+    try coordinator.requireInternet(id)
+    coordinator.setScriptInternet(false)
+    #expect(throws: (any Error).self) { try coordinator.requireInternet(id) }
+    coordinator.resetInternetOverride()
+    try coordinator.requireInternet(id)
+    coordinator.internetDefault = { false }
+    #expect(throws: (any Error).self) { try coordinator.requireInternet(id) }
+    coordinator.setScriptInternet(true)
+    try coordinator.requireInternet(id)
+}

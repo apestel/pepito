@@ -27,7 +27,13 @@ public enum SidebarItem: Hashable, Sendable {
 public final class MeetingCoordinator {
     // Réglages / configuration (Phase 6)
     public let missions: MissionCoordinator
-    public var settings: Settings
+    public var settings: Settings {
+        didSet {
+            if oldValue.missionInternetEnabled != settings.missionInternetEnabled {
+                missions.enforceInternetPolicy()
+            }
+        }
+    }
     public var tokenInput: String = ""
     public var tokenPresent: Bool = false
     public var connectionStatus: String?
@@ -196,6 +202,7 @@ public final class MeetingCoordinator {
             ?? URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "Pepito/recordings")
 
         self.settings = settingsStore.load()
+        missions.internetDefault = { [weak self] in self?.settings.missionInternetEnabled ?? true }
         performStorage { try reloadData() }
         self.tokenPresent = ((try? tokenStore.token(for: tokenAccount)) ?? nil) != nil
         missions.sourceProvider = { [weak self] mission in try self?.missionSources(mission) ?? [] }
