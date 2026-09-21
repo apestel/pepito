@@ -4,6 +4,7 @@
 set -e
 
 CONFIG="${1:-debug}"
+python3 Packaging/prepare-agent-runtime.py
 if [ "$CONFIG" = "release" ]; then
     swift build -c release
     BIN=".build/release/Pepito"
@@ -18,6 +19,10 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Pepito"
 cp Packaging/Info.plist "$APP/Contents/Info.plist"
 cp Packaging/Pepito.icns "$APP/Contents/Resources/Pepito.icns"
+mkdir -p "$APP/Contents/Resources/AgentRuntime"
+cp Runtime/bridge.mjs Runtime/script-runner.mjs Runtime/fetch.mjs Runtime/package.json Runtime/package-lock.json "$APP/Contents/Resources/AgentRuntime/"
+cp -R Runtime/node_modules "$APP/Contents/Resources/AgentRuntime/"
+cp .build/agent-assets/node .build/agent-assets/NODE-LICENSE "$APP/Contents/Resources/AgentRuntime/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # Signature. L'ad-hoc (-) change de hash à chaque build : TCC (Enregistrement d'écran,
@@ -26,7 +31,9 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 # (Trousseau › Assistant de certification › « Signature de code ») nommé p.ex. « Pepito Dev »,
 # puis exporte PEPITO_SIGN_IDENTITY="Pepito Dev". TCC lie alors l'autorisation à l'identité.
 SIGN_IDENTITY="${PEPITO_SIGN_IDENTITY:--}"
-codesign --force --deep --sign "$SIGN_IDENTITY" "$APP" >/dev/null 2>&1 || true
+codesign --force --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/AgentRuntime/node"
+codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
+codesign --verify --deep --strict "$APP"
 if [ "$SIGN_IDENTITY" = "-" ]; then
     echo "⚠️  Signé ad-hoc : la permission Enregistrement d'écran devra être réaccordée après ce build."
     echo "    (Pour la rendre persistante, voir PEPITO_SIGN_IDENTITY dans build-app.sh.)"

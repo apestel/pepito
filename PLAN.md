@@ -4,6 +4,19 @@ Plan phasé, exhaustif et enrichi. Chaque phase liste un objectif, des tâches, 
 « fait ». Les fonctionnalités marquées 💡 sont des enrichissements proposés au-delà du cahier des
 charges initial.
 
+## Lot Missions — branche `codex/pepito-agentic` (en validation)
+
+- [x] Pi embarqué, dépendances verrouillées et test réel du protocole d’outils.
+- [x] Scratchpad persistant, scripts sous isolation native macOS et Internet opt-in ; navigateur WebKit.
+- [x] Sources autorisées, imports, livrables, téléchargements contrôlés et conflits de statut.
+- [x] Espace Missions, conversation persistante, validations, arrêt et reprise.
+- [x] Tests unitaires, diagnostics d’isolation et bundle signé.
+- [x] Aller-retour Swift → Pi → outil → réponse avec l’endpoint actif de Pépito.
+- [ ] Validation du scénario métier complet avec l’endpoint utilisateur.
+- [ ] QA d’enregistrement réel et mesure des ressources sous charge.
+
+Architecture, limites et commandes : [AGENTIC.md](AGENTIC.md).
+
 ---
 
 ## Phase 0 — Amorçage & fondations (semaine 1) — ✅ TERMINÉE

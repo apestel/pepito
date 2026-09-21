@@ -71,3 +71,17 @@ public final class EventKitCalendar: CalendarProviding {
             end: e.endDate)
     }
 }
+
+extension EventKitCalendar {
+    /// Lecture bornée pour les missions ; aucune création d'événement.
+    public func eventsText(start: String, end: String) async throws -> String {
+        let f=ISO8601DateFormatter()
+        guard let a=f.date(from:start), let b=f.date(from:end), b>a, b.timeIntervalSince(a)<=31*86400 else {
+            throw NSError(domain:"Calendar",code:1,userInfo:[NSLocalizedDescriptionKey:"Période ISO8601 invalide (maximum 31 jours)."])
+        }
+        guard await requestAccess() else { throw NSError(domain:"Calendar",code:2,userInfo:[NSLocalizedDescriptionKey:"Accès au calendrier refusé."]) }
+        return store.events(matching:store.predicateForEvents(withStart:a,end:b,calendars:nil)).prefix(100).map {
+            "\($0.startDate.description) — \($0.title ?? "")\n\(($0.notes ?? "").prefix(1000))"
+        }.joined(separator:"\n\n")
+    }
+}

@@ -7,6 +7,49 @@ une version MINOR peut apporter une rupture (schéma SQLite, format du Vault).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-21
+
+### Fonctionnel
+
+- **Missions persistantes** — confier une tâche à l’IA, importer ses fichiers, suivre les appels
+  d’outils et reprendre la conversation après fermeture. Les accès aux données de Pépito et les
+  changements métier restent soumis aux autorisations de la mission et aux validations prévues.
+- **Livrables intégrés** — consulter les documents, fichiers et sources dans le panneau de la
+  mission, avec aperçu Markdown, HTML autonome et Quick Look, puis exporter les résultats.
+- **Scripts et navigateur** — exécuter Python, JavaScript ou shell dans le dossier de travail
+  de la mission ; autoriser explicitement Internet. Le navigateur intégré propose une session
+  indépendante et une prise en main manuelle.
+- **Consignes de synthèse dictées** — dicter les instructions qui guideront l’analyse d’une
+  réunion, en complément des notes.
+- **Fiabilité des réunions** — sauvegardes et reprises plus robustes ; retraiter une réunion
+  préserve les modifications manuelles des actions et évite leur duplication.
+
+### Technique
+
+- Ajout d’AgentKit et SandboxKit, protocole Pi avec reprise de session, journaux d’appels
+  persistants et contrôles de conflit avant application des changements métier.
+- Scripts macOS isolés par Seatbelt, environnement minimal, scratchpad persistant par mission,
+  limites de durée et de sortie, arrêt des groupes de processus et réseau soumis à autorisation.
+- Navigateur WebKit éphémère ; runtime Node 24.21.0 embarqué, archive vérifiée par SHA-256 et
+  dépendances npm verrouillées, installées sans scripts. Aucune VM Linux à télécharger.
+- Transactions SQLite et tests de régression sur les échecs de sauvegarde, suppressions et
+  retraitements ; conservation des statuts et de l’implication modifiés manuellement.
+- Ajustements du traitement audio et du budget de transcript transmis à l’IA ; persistance
+  des consignes de synthèse.
+- Validation locale : 141 tests Swift et 8 tests du runtime, dont l’isolation native, la
+  persistance du scratchpad, les permissions réseau, l’annulation et les limites d’exécution.
+
+### Limites connues
+
+- Application signée ad-hoc et non notarisée : au premier lancement, utiliser **clic droit ›
+  Ouvrir**. La reconstruction peut imposer de réaccorder les permissions macOS.
+- L’isolation des scripts repose sur Seatbelt, mécanisme macOS déprécié, et partage le noyau
+  de l’hôte. Les bibliothèques Python tierces ne sont pas embarquées.
+- Les sous-ressources du navigateur utilisent le réseau WebKit ; une autorisation Internet
+  pour un script lui donne aussi accès au réseau local pendant cet appel.
+- Capture audio, permissions TCC, transcription réelle, Mail et migration d’une base existante
+  nécessitent la QA manuelle décrite dans `Packaging/QA-CHECKLIST.md`.
+
 ## [0.5.0] - 2026-08-21
 
 Première version distribuée. Le produit couvre la boucle complète : capturer une réunion, la

@@ -7,6 +7,7 @@ import AIKit
 import VaultKit
 import ActionKit
 import MailKit
+import AgentKit
 
 /// Contrôleur applicatif principal (@MainActor, observable) : réglages, enregistrement, et
 /// pipeline de bout en bout capture → transcription → analyse agentic. Point d'entrée unique de
@@ -16,6 +17,7 @@ import MailKit
 public enum SidebarItem: Hashable, Sendable {
     case live
     case dashboard
+    case missions
     case mailReview(String)
     case meeting(UUID)
 }
@@ -24,6 +26,7 @@ public enum SidebarItem: Hashable, Sendable {
 @Observable
 public final class MeetingCoordinator {
     // Réglages / configuration (Phase 6)
+    public let missions: MissionCoordinator
     public var settings: Settings
     public var tokenInput: String = ""
     public var tokenPresent: Bool = false
@@ -177,6 +180,7 @@ public final class MeetingCoordinator {
         },
         providerFactory: (@Sendable (Settings, String) -> (any AIProvider)?)? = nil
     ) {
+        self.missions = MissionCoordinator(root: settingsStore.fileURL.deletingLastPathComponent().appending(path: "missions"))
         self.settingsStore = settingsStore
         self.database = database
         self.tokenStore = tokenStore
@@ -194,6 +198,24 @@ public final class MeetingCoordinator {
         self.settings = settingsStore.load()
         performStorage { try reloadData() }
         self.tokenPresent = ((try? tokenStore.token(for: tokenAccount)) ?? nil) != nil
+        missions.sourceProvider = { [weak self] mission in try self?.missionSources(mission) ?? [] }
+        missions.sourceReader = { [weak self] id, mission in
+            guard let self, id.hasPrefix("meeting:"), let meetingID=UUID(uuidString:String(id.dropFirst(8))),
+                  mission.includePepito || mission.meetingID == meetingID,
+                  let meeting=try database.loadMeeting(meetingID) else { return nil }
+            return MissionSource(id:id,kind:"meeting",title:meeting.title,text:meeting.transcript ?? "Transcript indisponible",url:location(for:meeting)?.absoluteString)
+        }
+        missions.actionProvider = { [weak self] id in self?.actions.first { $0.id == id } }
+        missions.applyAction = { [weak self] old, status in
+            guard let self else { throw AgentError.unavailable("Stockage indisponible") }
+            try database.transaction {
+                guard try database.loadAllActions().first(where: { $0.id == old.id }) == old else {
+                    throw AgentError.unavailable("L’action a changé depuis la proposition.")
+                }
+                try database.updateStatus(old.id, status)
+            }
+            try reloadData()
+        }
     }
 
     // MARK: - Réglages
@@ -1246,4 +1268,35 @@ public enum ProcessingPhase: Sendable, Equatable {
     public var isDone: Bool { self == .done }
     public var isFailed: Bool { if case .failed = self { true } else { false } }
     public var isRunning: Bool { self == .transcribing || self == .analyzing }
+}
+
+
+extension MeetingCoordinator {
+    public func beginMission(meeting: Meeting? = nil) {
+        missions.create(meeting: meeting); selection = .missions
+    }
+    public func sendMission(probe: Bool = false) {
+        missions.send(settings: settings, token: currentToken(), probe: probe)
+    }
+    private func missionSources(_ mission: Mission) throws -> [MissionSource] {
+        var result: [MissionSource] = []
+        let selectedMeetings = mission.includePepito ? meetings : meetings.filter { $0.id == mission.meetingID }
+        for m in selectedMeetings {
+            result.append(MissionSource(id: "meeting:" + m.id.uuidString, kind: "meeting", title: m.title,
+                text: String((summaryMarkdown(for: m) ?? "Résumé indisponible. read_source donne accès au transcript.").prefix(6000)), url: location(for: m)?.absoluteString))
+        }
+        for a in actions where mission.includePepito || (mission.meetingID != nil && a.meetingID == mission.meetingID) {
+            result.append(MissionSource(id: "action:" + a.id.uuidString, kind: "action", title: a.title,
+                text: "Statut: \(a.status.rawValue)\nResponsable: \(a.owner ?? "")\nÉchéance: \(a.dueDate?.description ?? "")\n\(a.details)", url: a.sourceURL))
+        }
+        if mission.includePepito {
+            for review in mailReviews {
+                for entry in try database.mailReview(date: review.date) {
+                    result.append(MissionSource(id: "mail:" + entry.id, kind: "mail", title: entry.subject,
+                        text: "\(entry.sender)\n\(entry.summary)\nAction: \(entry.action)\n\(entry.why)", url: entry.url))
+                }
+            }
+        }
+        return result
+    }
 }

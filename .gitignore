@@ -6,3 +6,5 @@
 *.xcodeproj
 DerivedData/
 .DS_Store
+
+Runtime/node_modules/
