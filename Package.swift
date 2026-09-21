@@ -17,7 +17,7 @@ let package = Package(
         .library(name: "ActionKit", targets: ["ActionKit"]),
         .library(name: "MailKit", targets: ["MailKit"]),
     ],
-    dependencies: [.package(url: "https://github.com/apple/containerization.git", exact: "0.45.0")],
+    dependencies: [],
     targets: [
         // App shell (SwiftUI, menu bar + fenêtre principale). Ne dépend que d'AppCore.
         .executableTarget(
@@ -36,7 +36,7 @@ let package = Package(
         .target(name: "AIKit"),
         .target(name: "AgentKit"),
         .executableTarget(name: "PepitoAgentProbe", dependencies: ["AppCore", "SandboxKit"]),
-        .target(name: "SandboxKit", dependencies: [.product(name: "Containerization", package: "containerization")]),
+        .target(name: "SandboxKit"),
         .target(name: "VaultKit"),
         .target(name: "ActionKit"),
         .target(name: "MailKit"),

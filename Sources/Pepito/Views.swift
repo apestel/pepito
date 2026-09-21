@@ -161,6 +161,23 @@ struct MainView: View {
                 }
                 Label("Missions", systemImage: "sparkles").tag(SidebarItem.missions)
                 Label("Suivi", systemImage: "checklist").tag(SidebarItem.dashboard)
+                if app.selection == .missions {
+                    Section("Conversations") {
+                        Button { app.beginMission() } label: {
+                            Label("Nouvelle mission", systemImage: "plus")
+                        }.buttonStyle(.plain).selectionDisabled()
+                        ForEach(app.missions.items) { mission in
+                            Button { app.missions.selectedID = mission.id } label: {
+                                HStack {
+                                    Text(mission.title).lineLimit(2)
+                                    Spacer(minLength: 2)
+                                    if app.missions.runningID == mission.id { ProgressView().controlSize(.mini) }
+                                }.padding(.vertical, 4)
+                                    .foregroundStyle(app.missions.selectedID == mission.id ? Color.accentColor : .primary)
+                            }.buttonStyle(.plain).selectionDisabled()
+                        }
+                    }
+                }
                 Section {
                     // Avancement/bilan du triage : la seule trace visible quand l'historique est
                     // encore vide (le triage dure ~1 min).
@@ -1598,7 +1615,7 @@ struct AdminView: View {
             }
 
             Section("Missions agentiques") {
-                Text("Même endpoint et même modèle que l’analyse. Scripts isolés dans une VM Linux ; navigateur séparé.")
+                Text("Même endpoint et même modèle que l’analyse. Scripts isolés par macOS dans un scratchpad privé ; navigateur WebKit dédié.")
                 Button("Tester la connexion agentique") { app.sendMission(probe: true) }
                     .disabled(app.missions.runningID != nil)
                 if let status = app.missions.status { Text(status).font(.caption) }

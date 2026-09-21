@@ -19,8 +19,15 @@ import Testing
         try WorkspaceFiles.read("valid.txt", in: URL(fileURLWithPath: root.path, isDirectory: true))
             == Data("hello".utf8))
     #expect(throws: (any Error).self) { try WorkspaceFiles.read("valid.txt", in: root, limit: 2) }
+    try FileManager.default.linkItem(at: root.appending(path: "valid.txt"), to: root.appending(path: "linked.txt"))
+    #expect(throws: (any Error).self) { try WorkspaceFiles.read("linked.txt", in: root) }
+
 }
-@Test func missingVMNeverFallsBackToHost() async throws {
-    let vm = Sandbox(root: URL(fileURLWithPath: "/tmp/pepito-no-vm"))
-    await #expect(throws: (any Error).self) { try await vm.script(language: "shell", code: "echo unsafe") }
+@Test func missingRuntimeNeverFallsBackToHost() async throws {
+    let vm = Sandbox(
+        root: URL(fileURLWithPath: "/tmp/pepito-no-runtime"),
+        runtime: URL(fileURLWithPath: "/missing"))
+    await #expect(throws: (any Error).self) {
+        try await vm.script(language: "shell", code: "echo unsafe")
+    }
 }

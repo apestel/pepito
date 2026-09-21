@@ -1,114 +1,104 @@
-# Missions Pépito — première implémentation
-
-Branche : `codex/pepito-agentic`. Pas de publication ni changement de version.
+# Missions Pépito
 
 ## Parcours
 
-Ouvrir **Missions**, créer une mission, préciser le résultat attendu et joindre les fichiers
-nécessaires. **Confier à Pépito** dans une réunion donne accès à cette réunion et à ses actions.
-La case d’autorisation ajoute les réunions, actions, revues de mails déjà enregistrées et le
-calendrier. Sans cette autorisation, aucune recherche globale n’est possible.
+Créer une mission, préciser le résultat et importer les fichiers utiles. Les réunions,
+actions, revues de mails et calendrier ne sont accessibles qu’avec l’autorisation dédiée.
+Les réponses et les groupes d’outils forment la conversation. Chaque appel peut être déplié :
+**Requête**, **Vérification**, **Réponse** (stdout, stderr, durée et code de sortie pour les scripts).
+Les états en cours, échec et interruption sont conservés avec la mission.
 
-La conversation montre les réponses et les opérations. Le panneau droit conserve les sources
-et les livrables. Les changements de statut, téléchargements et interactions navigateur sont
-présentés avant application ; les décisions sont journalisées. Un changement concurrent de
-l’action invalide la proposition. Un livrable peut être révélé dans le Finder ou exporté.
+Le panneau droit se masque et propose **Livrables**, **Fichiers**, **Sources**, **Web**.
+Un livrable s’ouvre dans le panneau : Markdown, texte, HTML autonome, ou aperçu Quick Look
+pour les formats pris en charge par macOS (PDF, images, documents…). L’HTML peut exécuter
+son JavaScript de rendu mais ne dispose ni de réseau, ni de pont vers Pépito. Les bibliothèques
+et images doivent être intégrées dans le document. Le bouton Source montre le contenu brut.
+Les aperçus texte sont plafonnés à 1 Mio ; les fichiers complets restent exportables.
 
-**Arrêter** interrompt l’agent et les VM. Une nouvelle instruction reprend la conversation.
-Après interruption, les opérations en cours sont signalées comme incertaines ; leurs
-identifiants ne sont pas rejoués. Les appels terminés ont un reçu persistant.
+**Arrêter** interrompt l’agent et les scripts. Une nouvelle instruction reprend la session
+et retrouve son scratchpad. Un appel au résultat incertain n’est jamais rejoué automatiquement.
+Les changements métier restent soumis à validation et aux contrôles de conflit existants.
 
-## Assemblage
+## Scratchpad et isolation
 
-- `AgentKit` : processus local et protocole JSONL ; `Runtime/bridge.mjs` : SDK Pi 0.85.1.
-- `SandboxKit` : Apple Containerization 0.45.0, Virtualization.framework.
-- AppCore : autorisations, journal de mission, lecture métier, conflits, réseau du navigateur.
-- SwiftUI : espace Missions, validation et aperçu interactif du navigateur.
-- Configuration IA existante : endpoint, modèle, budget et token Keychain. Le test dans
-  Réglages effectue un vrai appel d’outil ; aucune substitution de fournisseur.
+Chaque mission possède `missions/<UUID>/scratchpad`, à côté de `inputs`, `outputs`, `events`
+et `session`. Les imports sont copiés dans le scratchpad ; l’original reste inchangé. Le dossier
+courant des scripts est ce scratchpad, également disponible dans `PEPITO_WORKSPACE`. Il persiste
+entre les tours. `read_artifact` publie un fichier du scratchpad dans les livrables, même après
+une reprise. Les journaux complets d’exécution restent dans `events`, hors des livrables.
 
-`./build-app.sh release` prépare Node 24.21.0 et le noyau Kata 3.32.0, vérifie les archives SHA-256,
-installe le verrou npm avec scripts d’installation désactivés, assemble et signe le bundle.
-Python 3.11+ et npm sont nécessaires à la construction, pas à l’usage de l’app.
-`Package.resolved` et `Runtime/package-lock.json` verrouillent les dépendances.
+Les scripts sont des processus macOS sous **Seatbelt** (`sandbox-exec`), sans VM, conteneur,
+noyau téléchargé ou image Linux. Un superviseur Node de confiance construit une politique
+`deny default`, puis lance le code avec un environnement minimal, sans token ni variables
+personnelles. Les lectures sont limitées au scratchpad et aux composants système/runtime
+nécessaires ; les écritures au scratchpad. Aucun repli non isolé n’est prévu en cas d’échec.
 
-Le premier build télécharge environ 714 Mo d’archives. Le premier usage des scripts ou du
-navigateur télécharge une image Playwright Linux et l’init Apple (environ 1,4 Go de contenu
-compressé par cache). Chaque VM a 2 CPU, 2 Go de mémoire maximum et un disque de 8 Go.
-Les caches scripts et navigateur sont distincts. Le bundle release mesure environ 654 Mo.
+Python utilise l’interpréteur des outils Apple ; JavaScript utilise Node embarqué ; le shell
+est `/bin/bash` sans profils utilisateur. Les bibliothèques Python tierces ne sont pas embarquées.
+La sandbox n’est pas une VM : elle partage le noyau macOS et dépend du mécanisme Seatbelt,
+déprécié par Apple. Une commande dispose de 60 secondes, sa sortie est limitée à 4 Mio, avec
+limites CPU et taille de fichier. Le superviseur termine le groupe de processus à l’arrêt,
+au délai et à la fin. Ce n’est pas un quota de disque global ni une garantie contre tous les
+mécanismes de détachement d’un processus hostile. Les descendants héritent néanmoins de la politique.
 
-## Frontières d’exécution
+Les entrées et exports sont limités à 100 Mio par fichier, avec noms simples et refus des liens,
+traversées, fichiers spéciaux et liens physiques. Les lectures vérifient le descripteur ouvert
+avec `O_NOFOLLOW`. Un fichier du scratchpad est copié hors de la zone modifiable avant aperçu.
+Les livrables texte créés directement par `write_artifact` sont limités à 1 Mio.
 
-Les scripts Python, Node et shell s’exécutent uniquement dans Linux. Aucun NIC, partage
-virtiofs, Vault, dossier personnel, profil de navigateur ou token IA n’est monté dans leur VM.
-Les fichiers importés sont copiés ; les exports refusent les chemins absolus, traversées et
-liens symboliques. Les fichiers importés sont limités à 32 Mo, les livrables à 1 Mo et la sortie
-d’une commande à 4 Mo. Une commande dispose de 60 secondes ; un dépassement arrête sa VM.
+### Internet
 
-Le navigateur utilise une autre VM sans NIC. Playwright relaie les requêtes au contrôleur
-HTTP hôte : domaines explicitement ouverts, DNS résolu et épinglé, réseaux privés refusés,
-réponses limitées à 8 Mo. Les redirections repassent par ce contrôle. WebSockets et service
-workers sont bloqués. Les requêtes autres que GET/HEAD exigent la prise de contrôle humaine.
-Les scripts ne disposent pas de ce canal. `download_file` passe par le même contrôleur, avec
-validation du nom et de l’URL ; il n’utilise aucun cookie de navigateur ni secret IA.
+Le réseau des scripts est bloqué par défaut. Le modèle peut demander `network: true` pour
+`curl`, DuckDuckGo ou un téléchargement. Si **Autoriser Internet aux scripts** est activé pour
+la mission, cet appel est permis ; sinon, l’utilisateur valide ce script précis. La demande
+et la vérification indiquent que le script peut transmettre le contenu de son scratchpad.
+Le réseau est alors disponible aux processus de cet appel, y compris le réseau local ;
+cela n’élargit pas leurs droits de lecture/écriture. L’autorisation ne copie aucun secret.
 
-Pi reçoit uniquement les outils Pépito déclarés. Aucun outil shell ou fichier de Pi n’est
-exposé sur l’hôte ; les extensions, skills, contextes et plugins personnels sont désactivés.
-Le token est fourni au processus Pi par son entrée standard et n’est pas enregistré dans sa
-configuration. Les erreurs d’authentification sont présentées sans réponse brute du proxy.
+`download_file` conserve son contrôleur HTTP séparé : DNS épinglé, réseau privé refusé,
+pas de redirection, 8 Mio maximum et validation humaine. Pi ne reçoit que les outils Pépito,
+sans shell hôte, extensions ou configuration personnelle. Son token IA arrive par stdin.
 
-Les missions et sessions sont stockées à côté de `settings.json`, dans `missions/<UUID>`.
-Les contenus sélectionnés sont envoyés au seul endpoint configuré. Les scripts et le
-navigateur ont des environnements temporaires, détruits à la fin de chaque tour ; seuls les
-fichiers explicitement exportés et les imports restent disponibles sur le Mac.
+### Navigateur
 
-## Vérifications reproductibles
+Le navigateur utilise **WebKit**, avec une session éphémère indépendante de Safari. Les pages
+s’affichent directement dans le panneau. **Prendre la main** permet de cliquer, remplir un
+formulaire et naviguer ; le modèle cesse alors de piloter. Les actions du modèle sont soumises
+à confirmation. Les navigations automatisées restent sur les domaines explicitement ouverts,
+en HTTP(S), avec GET/HEAD ; les envois de formulaire nécessitent le contrôle manuel.
+Les sous-ressources utilisent le réseau WebKit normal, pas le contrôleur DNS de `download_file`.
+Les fenêtres secondaires et schémas externes sont refusés. Aucun profil de connexion n’est partagé. La page reste consultable à la fin du tour ; la session est remplacée lors de l’ouverture du navigateur d’une autre mission ou à la fermeture de l’app.
+
+## Assemblage et tests
+
+`./build-app.sh release` vérifie l’archive Node 24.21.0 par SHA-256, installe le verrou npm
+sans scripts d’installation, assemble et signe le bundle. Aucun téléchargement de VM n’a lieu.
+Python 3 et npm servent à construire ; Xcode/Command Line Tools fournit Python pour les scripts.
 
 ```sh
 swift test
-npm test --prefix Runtime
+PATH="$PWD/.build/agent-assets:$PATH" npm test --prefix Runtime
 ./build-app.sh release
-codesign --force --sign - --entitlements Packaging/Agent.entitlements .build/release/PepitoAgentProbe
-.build/release/PepitoAgentProbe .build/agent-assets/vmlinux .build/agent-smoke
-.build/release/PepitoAgentProbe --browser-test .build/agent-assets/vmlinux .build/agent-smoke .build/Pepito.app/Contents/Resources/AgentRuntime
+.build/release/PepitoAgentProbe .build/Pepito.app/Contents/Resources/AgentRuntime /tmp/pepito-scratch-test
 .build/release/PepitoAgentProbe --endpoint-test .build/Pepito.app/Contents/Resources/AgentRuntime
 ```
 
-Le diagnostic endpoint lit le token configuré mais ne transmet aucune donnée métier.
-Sans arguments supplémentaires, il utilise les réglages **enregistrés sur disque**, qui peuvent
-différer des valeurs affichées dans une fenêtre Réglages non enregistrée. Il affiche toujours
-le modèle et l’endpoint testés. Pour vérifier les valeurs actives sans les enregistrer :
+Les tests utilisent le Node autonome préparé par `Packaging/prepare-agent-runtime.py` (ou un Node officiel équivalent). Les distributions Homebrew avec bibliothèques externes ne sont pas le runtime du bundle.
 
-```sh
-.build/release/PepitoAgentProbe --endpoint-test .build/Pepito.app/Contents/Resources/AgentRuntime <endpoint> <modele>
-```
+Les tests natifs d’isolation doivent tourner hors d’une sandbox parent qui interdit
+`sandbox-exec`. Ils utilisent un faux secret et un serveur HTTP loopback, vérifient les trois
+langages, la persistance, les refus de lecture/écriture, les alias du volume, les liens,
+l’accès réseau opt-in, l’annulation, les descendants, le délai et la limite de sortie.
+Les tests Swift vérifient aussi la reprise, les conflits et la compatibilité des anciens journaux.
+Le diagnostic endpoint utilise les réglages enregistrés et ne transmet aucune donnée métier.
 
-Le diagnostic navigateur utilise uniquement `https://example.com` et enregistre une capture
-dans le cache de test. Les diagnostics VM ne sont pas exécutés en CI.
+## Inspiration inspectée
 
-État vérifié le 13 septembre 2026 : 140 tests Swift, 6 tests Node ; exécution réelle des trois
-langages, absence de réseau direct et de secrets, export, consultation web, capture et arrêt.
-Le contrôle UI dans un bundle et une base séparés a vérifié le rendu des colonnes, la création,
-la saisie et l’import d’un fichier. Les tests couvrent JSONL fragmenté, refus, annulation, sortie du processus, reprise de session,
-non-persistance du token, récupération après interruption et conflit avec une édition humaine.
+Bionic sépare un scratchpad hôte de son outil Python Pyodide/WASM sous Deno : entrées copiées
+vers `/inputs`, sorties collectées depuis `/outputs`, limites explicites et appels repliables.
+Pépito reprend les concepts de workspace, traçabilité et rendu intégré avec les briques macOS
+existantes ; il ne copie pas le runtime de Bionic et ne prétend pas utiliser son isolation WASM.
 
-Correction du diagnostic : le premier HTTP 401 concernait les réglages enregistrés sur disque,
-qui pointaient vers un autre fournisseur que celui affiché dans Pépito. Le client natif confirme
-HTTP 200 avec la configuration affichée ; le token utilisateur est valide. Le parcours réel
-Swift → Pi → outil → réponse est également confirmé avec cette même configuration. Le scénario
-métier complet reste à valider.
-La QA avec un enregistrement réel et la mesure des ressources pendant cet enregistrement
-restent à effectuer ; aucun enregistrement utilisateur n’a été démarré pour ces tests.
-
-## Périmètre actuel
-
-Une mission à la fois, tant que le Mac et Pépito sont actifs. Les revues de mails déjà présentes
-sont consultables ; la mission ne lit pas directement une nouvelle boîte mail. Les documents
-sont autorisés par import, sans indexation implicite de tout le Vault. Le seul changement métier
-exposé pour ce lot est le statut d’une action ; les relances sont des brouillons Markdown.
-
-Le navigateur est un aperçu Chromium pilotable par clic et saisie, avec reprise manuelle.
-Les connexions impliquant plusieurs domaines exigent de les ouvrir explicitement ; les flux
-OAuth à fenêtres multiples, WebSockets et téléchargements du navigateur ne sont pas couverts.
-Les transactions importantes doivent être finalisées manuellement. Les profils de connexion
-ne sont pas conservés entre les tours. Automatisations, sous-agents et plugins tiers sont hors lot.
+Une mission fonctionne à la fois, tant que le Mac et Pépito restent actifs. Les automatisations,
+sous-agents de revue et plugins tiers ne sont pas ajoutés. L’onglet Vérification affiche les
+contrôles effectifs et décisions humaines, sans prétendre qu’un second modèle a audité le code.

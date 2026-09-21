@@ -1,6 +1,6 @@
 # CI Pépito. macos-26 est GA sur les runners GitHub-hosted, en arm64 natif, avec Xcode 26.x —
 # les prérequis du projet (macOS 26 Tahoe + Apple Silicon) sont donc couverts sans runner perso.
-# Les diagnostics de VM sont exécutés localement ; le runner vérifie les tests et le bundle.
+# Les diagnostics natifs d’isolation complètent les tests et le bundle.
 name: CI
 
 on:

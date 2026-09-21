@@ -13,7 +13,7 @@ extension, never a prerequisite.
 
 ## Missions (implementation branch)
 
-A persistent mission workspace embeds Pi and uses separate Linux VMs for scripts and Chromium.
+A persistent mission workspace embeds Pi, runs scripts in a native macOS sandbox with opt-in Internet access, and uses an ephemeral WebKit browser. Tool calls are collapsible; artifacts have an integrated preview.
 See [AGENTIC.md](AGENTIC.md) for setup, permissions, verification and current limitations.
 
 ## Requirements

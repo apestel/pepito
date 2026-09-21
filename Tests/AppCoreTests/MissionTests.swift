@@ -52,3 +52,40 @@ import Testing
     #expect(applied.involvement == .follow)
     #expect(try db.loadAllActions().count == 1)
 }
+
+@Test func missionToolDetailsSurviveRestartAndGroupAdjacentCalls() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var mission = Mission(title: "Dossier de travail")
+    mission.scriptInternet = true
+    mission.messages = [
+        MissionMessage(role: "user", text: "Analyser"),
+        MissionMessage(
+            role: "tool", text: "run_script",
+            tool: MissionToolCall(id: "a", name: "run_script", request: "{code:42}")),
+        MissionMessage(
+            role: "tool", text: "read_artifact",
+            tool: MissionToolCall(id: "b", name: "read_artifact", request: "{}")),
+        MissionMessage(role: "assistant", text: "Résultat"),
+    ]
+    mission.state = "running"
+    mission.inFlightCallID = "a"
+    let store = MissionStore(root: root)
+    try store.save(mission)
+    let loaded = try #require(store.load().first)
+    #expect(loaded.scriptInternet == true)
+    #expect(loaded.messageGroups[1].messages.count == 2)
+    #expect(loaded.messages[1].tool?.state == "interrupted")
+    #expect(loaded.messages[1].tool?.request == "{code:42}")
+    // Older mission JSON has neither Internet grants nor structured tool details.
+    var old = try #require(
+        JSONSerialization.jsonObject(with: JSONEncoder().encode(mission)) as? [String: Any])
+    old.removeValue(forKey: "scriptInternet")
+    old["messages"] = [
+        ["id": UUID().uuidString, "role": "tool", "text": "Ancien résultat", "date": 0]
+    ]
+    let legacy = try JSONDecoder().decode(
+        Mission.self, from: JSONSerialization.data(withJSONObject: old))
+    #expect(legacy.scriptInternet == nil)
+    #expect(legacy.messages[0].tool == nil)
+}

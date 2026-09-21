@@ -7,10 +7,10 @@ charges initial.
 ## Lot Missions — branche `codex/pepito-agentic` (en validation)
 
 - [x] Pi embarqué, dépendances verrouillées et test réel du protocole d’outils.
-- [x] VM Apple sans réseau pour scripts ; seconde VM pour Chromium/Playwright.
+- [x] Scratchpad persistant, scripts sous isolation native macOS et Internet opt-in ; navigateur WebKit.
 - [x] Sources autorisées, imports, livrables, téléchargements contrôlés et conflits de statut.
 - [x] Espace Missions, conversation persistante, validations, arrêt et reprise.
-- [x] Tests unitaires, diagnostics VM/navigateur réels et bundle release signé.
+- [x] Tests unitaires, diagnostics d’isolation et bundle signé.
 - [x] Aller-retour Swift → Pi → outil → réponse avec l’endpoint actif de Pépito.
 - [ ] Validation du scénario métier complet avec l’endpoint utilisateur.
 - [ ] QA d’enregistrement réel et mesure des ressources sous charge.

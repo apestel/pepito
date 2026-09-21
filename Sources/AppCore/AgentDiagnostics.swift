@@ -4,7 +4,9 @@ import SandboxKit
 
 extension AppCore {
     /// Test réel du protocole d'outils, sans fournir de donnée métier au modèle.
-    @MainActor public static func testAgentRuntime(runtime: URL, settings: Settings? = nil) async throws {
+    @MainActor public static func testAgentRuntime(runtime: URL, settings: Settings? = nil)
+        async throws
+    {
         let settings = settings ?? SettingsStore.defaultLocation().load()
         let token = try KeychainTokenStore().token(for: "default") ?? ""
         let dir = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
@@ -22,8 +24,10 @@ extension AppCore {
         try process.send([
             "type": .string("start"), "endpoint": .string(settings.aiBaseURL),
             "model": .string(settings.aiModel), "token": .string(token),
-            "budget": .number(Double(settings.aiInputTokenBudget)), "sessionDirectory": .string(dir.path),
-            "systemPrompt": .string("Tu testes un protocole. Appelle probe avec pepito-probe puis confirme."),
+            "budget": .number(Double(settings.aiInputTokenBudget)),
+            "sessionDirectory": .string(dir.path),
+            "systemPrompt": .string(
+                "Tu testes un protocole. Appelle probe avec pepito-probe puis confirme."),
             "probe": .bool(true),
         ])
         var called = false
@@ -33,19 +37,26 @@ extension AppCore {
                 try process.send([
                     "type": .string("prompt"),
                     "text": .string(
-                        "Appelle probe avec la valeur pepito-probe, puis confirme la valeur renvoyée."),
+                        "Appelle probe avec la valeur pepito-probe, puis confirme la valeur renvoyée."
+                    ),
                 ])
             case "tool":
                 guard event.name == "probe", event.arguments?["value"]?.string == "pepito-probe",
                     let id = event.id
-                else { throw AgentError.protocolError("Le modèle n'a pas respecté le protocole d'outil.") }
+                else {
+                    throw AgentError.protocolError(
+                        "Le modèle n'a pas respecté le protocole d'outil.")
+                }
                 called = true
                 try process.send([
-                    "type": .string("tool_result"), "id": .string(id), "text": .string("pepito-probe"),
+                    "type": .string("tool_result"), "id": .string(id),
+                    "text": .string("pepito-probe"),
                 ])
             case "error": throw AgentError.unavailable(event.text ?? "Erreur IA")
             case "done":
-                guard called else { throw AgentError.unavailable("Le modèle n'a pas appelé l'outil.") }
+                guard called else {
+                    throw AgentError.unavailable("Le modèle n'a pas appelé l'outil.")
+                }
                 return
             default: break
             }
@@ -56,19 +67,19 @@ extension AppCore {
 
 extension AppCore {
     /// Diagnostic du navigateur isolé sur une page publique sans transaction.
-    @MainActor public static func testMissionBrowser(kernel: URL, root: URL, runtime: URL) async throws {
-        let browser = MissionBrowser(root: root)
+    @MainActor public static func testMissionBrowser(root: URL) async throws {
+        let browser = MissionBrowser()
         do {
             let result = try await browser.command(
-                args: ["operation": .string("open"), "url": .string("https://example.com")], kernel: kernel,
-                runtime: runtime)
-            guard result.text.contains("Example Domain"), let image = result.image, !image.isEmpty else {
+                args: ["operation": .string("open"), "url": .string("https://example.com")])
+            guard result.text.contains("Example Domain"), let image = result.image, !image.isEmpty
+            else {
                 throw AgentError.unavailable("Page ou capture navigateur manquante")
             }
             try image.write(to: root.appending(path: "browser.jpg"))
-            await browser.stop()
+            browser.stop()
         } catch {
-            await browser.stop()
+            browser.stop()
             throw error
         }
     }
