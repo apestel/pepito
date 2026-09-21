@@ -238,7 +238,7 @@ struct MissionArtifactPreview: View {
                 } else {
                     ScrollView {
                         if url.pathExtension.lowercased() == "md", !source {
-                            Text(.init(content)).textSelection(.enabled).frame(
+                            MarkdownText(markdown: content).textSelection(.enabled).frame(
                                 maxWidth: .infinity, alignment: .leading)
                         } else {
                             Text(content).font(.caption.monospaced()).textSelection(.enabled).frame(

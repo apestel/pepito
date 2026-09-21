@@ -7,6 +7,43 @@ une version MINOR peut apporter une rupture (schéma SQLite, format du Vault).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-21
+
+### Fonctionnel
+
+- **Réglages conservés au relancement** — l’endpoint, le modèle et les autres réglages sont
+  enregistrés automatiquement dès leur modification. Une erreur d’écriture est affichée ;
+  le token reste enregistré séparément dans le Trousseau avec son bouton dédié.
+- **Markdown dans les conversations** — titres, tableaux avec alignement des colonnes, gras,
+  italique, barré, liens, listes imbriquées, citations et blocs de code sont mis en forme,
+  y compris dans les aperçus des livrables Markdown.
+- **Menu macOS classique** — les commandes de la barre de menus sont présentées en liste.
+  Les niveaux audio sont désormais visibles dans la vue « En direct ».
+- **Conversations plus pratiques** — gestion des conversations, consignes en attente,
+  suivi du défilement et affichage du code exécuté avec coloration syntaxique.
+- **Python et bureautique hors ligne** — environnement Python embarqué avec bibliothèques
+  de calcul, de graphiques et de manipulation de documents disponibles dans les missions.
+- Correction d’un blocage possible après la fin d’un script.
+
+### Technique
+
+- Persistance atomique des réglages à chaque changement, remontée des erreurs de stockage
+  et test de régression couvrant le relancement avec de nouvelles valeurs LLM.
+- Analyse Markdown native Foundation et rendu SwiftUI des structures de blocs ; tests des
+  styles, tableaux, cellules vides, listes, citations, code et réponses incomplètes.
+- MenuBarExtra en style menu ; observation des spectrogrammes isolée de celle du transcript.
+- Pyodide et bibliothèques Python embarqués avec sommes de contrôle vérifiées ; assemblage
+  du bundle protégé contre les constructions concurrentes.
+- Améliorations du runtime de conversation, de la reprise et des consignes ; lecture de la
+  réponse finale des scripts sans attendre la fermeture de tous les descripteurs du processus.
+
+### Limites connues
+
+- Application signée ad-hoc et non notarisée : au premier lancement, utiliser **clic droit ›
+  Ouvrir**. Une reconstruction peut imposer de réaccorder les permissions macOS.
+- Capture audio, permissions TCC, transcription réelle, Mail et migration d’une base existante
+  nécessitent la QA manuelle décrite dans `Packaging/QA-CHECKLIST.md`.
+
 ## [0.6.0] - 2026-09-21
 
 ### Fonctionnel

@@ -29,6 +29,8 @@ public final class MeetingCoordinator {
     public let missions: MissionCoordinator
     public var settings: Settings {
         didSet {
+            guard settings != oldValue else { return }
+            saveSettings()
             if oldValue.missionInternetEnabled != settings.missionInternetEnabled {
                 missions.enforceInternetPolicy()
             }
@@ -227,9 +229,10 @@ public final class MeetingCoordinator {
 
     // MARK: - Réglages
 
-    public func saveSettings() {
-        do { try settingsStore.save(settings) }
-        catch { log.error("Sauvegarde réglages: \(error, privacy: .public)") }
+    /// Persiste immédiatement pour que quitter ou reconstruire l'app ne perde aucune édition.
+    @discardableResult
+    public func saveSettings() -> Bool {
+        performStorage { try settingsStore.save(settings) }
     }
 
     public func commitToken() {
@@ -691,7 +694,7 @@ public final class MeetingCoordinator {
         return live
     }
 
-    /// Vrai tant qu'une vue affiche les niveaux (le popover de la barre de menu, seul consommateur
+    /// Vrai tant qu'une vue affiche les niveaux (la vue « En direct », seul consommateur
     /// de `micSpectrogram`/`systemSpectrogram`). La vue le bascule via `onAppear`/`onDisappear`.
     ///
     /// Sans consommateur à l'écran, ni la FFT ni les mutations observables à 30 Hz ne servent —

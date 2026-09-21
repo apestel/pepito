@@ -6,7 +6,8 @@ vraie base de données. `release.sh` affiche cette liste et attend une validatio
 
 ## Capture
 
-- [ ] Le démarrage depuis la barre de menus lance l'enregistrement, le VU-mètre bouge à la voix.
+- [ ] Le démarrage depuis la barre de menus lance l'enregistrement ; dans « En direct », le
+      VU-mètre bouge à la voix.
 - [ ] La sortie audio système est captée (tap Core Audio) : lancer une vidéo, vérifier le niveau.
 - [ ] Réunion en présentiel (aucun son système) : `system.caf` vide, aucune erreur affichée.
 - [ ] Stop → l'audio est sur disque, la réunion apparaît dans la timeline.
@@ -36,6 +37,13 @@ vraie base de données. `release.sh` affiche cette liste et attend une validatio
 ## Performance
 
 - [ ] `./profile.py` sur la build release, app au repos : CPU < 5 %.
+
+## Réglages et conversations
+
+- [ ] Modifier l’endpoint et le modèle, fermer les réglages puis relancer l’app : les nouvelles
+      valeurs sont conservées sans cliquer sur un bouton de sauvegarde.
+- [ ] Une conversation affiche correctement titres, italique, tableaux, listes et blocs de code.
+- [ ] La barre de menus affiche une liste native ; les commandes ouvrent les bonnes fenêtres.
 
 ## Le livrable
 

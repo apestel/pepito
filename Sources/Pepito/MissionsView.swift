@@ -153,7 +153,7 @@ struct MissionsView: View {
                                             Text(message.role == "user" ? "Vous" : "Information")
                                                 .font(.caption.bold()).foregroundStyle(.secondary)
                                         }
-                                        Text(.init(String(message.text.prefix(32_000))))
+                                        MarkdownText(markdown: String(message.text.prefix(32_000)))
                                             .textSelection(.enabled)
                                     }.padding(message.role == "user" ? 12 : 0)
                                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -168,7 +168,8 @@ struct MissionsView: View {
                                     Label(missions.runningID == mission.id ? "Consigne en attente du prochain tour" : "Consigne en attente de reprise",
                                           systemImage: "text.bubble")
                                         .font(.caption).foregroundStyle(.secondary)
-                                    Text(message.text).textSelection(.enabled)
+                                    MarkdownText(markdown: String(message.text.prefix(32_000)))
+                                        .textSelection(.enabled)
                                 }
                                 .padding(12).frame(maxWidth: .infinity, alignment: .leading)
                                 .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))

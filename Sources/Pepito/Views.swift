@@ -15,16 +15,13 @@ struct MenuBarContent: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Pépito").font(.headline)
-
+        Group {
             if app.isRecording {
-                RecordingLevelsView(mic: app.micSpectrogram, system: app.systemSpectrogram)
                 Button(role: .destructive) {
                     // À l'arrêt, la saisie du nom + tags se fait dans la fenêtre dédiée.
                     Task { await app.stopRecording(); open("naming") }
                 } label: {
-                    Label("Arrêter", systemImage: "stop.circle.fill")
+                    Label("Arrêter l’enregistrement", systemImage: "stop.circle.fill")
                 }
             } else {
                 Button {
@@ -36,15 +33,15 @@ struct MenuBarContent: View {
             }
 
             if let status = app.statusMessage {
-                Text(status).font(.caption).foregroundStyle(.secondary)
+                Text(status)
             }
             if !app.settings.isConfigured {
-                Label("Configuration incomplète (Réglages)", systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange)
+                Button("Configuration incomplète — ouvrir les réglages…") { open("settings") }
             }
 
+            Divider()
             Button { open("main") } label: {
-                Label("Fenêtre principale (direct, réunions & suivi)", systemImage: "sidebar.left")
+                Label("Ouvrir Pépito", systemImage: "sidebar.left")
             }
             // Capture au fil de l'eau : une tâche qui ne sort ni d'une réunion ni d'un mail.
             Button {
@@ -57,18 +54,25 @@ struct MenuBarContent: View {
 
             Divider()
             Button { open("settings") } label: { Label("Réglages…", systemImage: "gearshape") }
-            Button("Quitter") { NSApplication.shared.terminate(nil) }
+                .keyboardShortcut(",")
+            Button("Quitter Pépito") { NSApplication.shared.terminate(nil) }
+                .keyboardShortcut("q")
         }
-        .padding(16)
-        .frame(width: 300)
-        // Le spectrogramme n'est calculé que tant que ce popover est à l'écran : c'est sa seule
-        // vue. Fermé, la FFT et ses 30 mutations observables par seconde ne servaient à rien.
-        .onAppear { app.levelsVisible = true }
-        .onDisappear { app.levelsVisible = false }
     }
 }
 
 // MARK: - Visualisation des niveaux (live)
+
+/// Isole les mises à jour à 30 Hz pour ne pas recalculer le transcript à chaque trame audio.
+private struct LiveRecordingLevels: View {
+    let app: MeetingCoordinator
+
+    var body: some View {
+        RecordingLevelsView(mic: app.micSpectrogram, system: app.systemSpectrogram)
+            .onAppear { app.levelsVisible = true }
+            .onDisappear { app.levelsVisible = false }
+    }
+}
 
 /// Spectrogramme live (FFT) : temps en X, fréquence en Y. Superpose les deux sources — micro
 /// (« Moi ») en bleu, système (« Interlocuteurs ») en orange — chaque source colorant les cellules
@@ -679,53 +683,6 @@ struct MailEntryCard: View {
     }
 }
 
-/// Rendu Markdown minimal : SwiftUI ne restitue nativement que l'inline (gras/italique/liens),
-/// donc titres et puces sont stylés ligne à ligne. Pas de `textSelection` : la sélection capte le
-/// double-clic, qui sert à passer en édition (cf. `MeetingDetailView`) ; on copie depuis l'éditeur.
-// ponytail: rendu ligne à ligne ; passer à un vrai parseur si tableaux/blocs de code arrivent.
-struct MarkdownText: View {
-    let markdown: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(markdown.components(separatedBy: "\n").enumerated()), id: \.offset) { _, raw in
-                line(raw)
-            }
-        }
-    }
-
-    @ViewBuilder private func line(_ raw: String) -> some View {
-        let trimmed = raw.trimmingCharacters(in: .whitespaces)
-        let hashes = trimmed.prefix(while: { $0 == "#" }).count
-        if trimmed.isEmpty {
-            Color.clear.frame(height: 2)
-        } else if hashes > 0, trimmed.dropFirst(hashes).hasPrefix(" ") {
-            inline(String(trimmed.dropFirst(hashes + 1)))
-                .font(hashes == 1 ? .title2.bold() : hashes == 2 ? .title3.bold() : .headline)
-                .padding(.top, 4)
-        } else if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("•")
-                inline(String(trimmed.dropFirst(2)))
-            }
-            .padding(.leading, CGFloat(raw.prefix(while: { $0 == " " }).count / 2) * 14)
-        } else if trimmed.allSatisfy({ $0 == "-" }) && trimmed.count >= 3 {
-            Divider()
-        } else {
-            inline(trimmed)
-        }
-    }
-
-    /// Inline-only : conserve les `#`/`-` déjà traités ci-dessus et évite qu'un `%` du texte
-    /// soit interprété comme un format.
-    private func inline(_ text: String) -> Text {
-        let parsed = try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))
-        return Text(parsed ?? AttributedString(text))
-    }
-}
-
 /// Édition d'une liste de valeurs (participants, tags) : ligne de résumé compacte + popover
 /// contenant une liste **scrollable**, une ligne par valeur. Les chips en ligne devenaient
 /// illisibles au-delà de quelques participants (débordement horizontal) ; ici 30 participants
@@ -1255,6 +1212,10 @@ struct LiveTranscriptView: View {
                 }
             }
 
+            if app.isRecording {
+                LiveRecordingLevels(app: app)
+            }
+
             if app.isRecording, !app.allTags.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -1644,7 +1605,7 @@ struct AdminView: View {
                 ValueListEditor(
                     systemImage: "person.2", title: "Mes collaborateurs",
                     placeholder: "Ajouter un collaborateur…", values: app.settings.teamMembers
-                ) { app.settings.teamMembers = $0; app.saveSettings() }
+                ) { app.settings.teamMembers = $0 }
                 Text("Les actions confiées à ces personnes passent en « À suivre » ; les autres en « Pour info ». Toujours modifiable action par action.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -1730,12 +1691,12 @@ struct AdminView: View {
             }
 
             Section {
-                Button("Enregistrer les réglages") {
-                    app.saveSettings()
-                    dismissWindow(id: "settings")
+                Button("Fermer") {
+                    if app.saveSettings() { dismissWindow(id: "settings") }
                 }
                 .keyboardShortcut(.defaultAction)
             } footer: {
+                Text("Les réglages sont enregistrés automatiquement. Le token utilise son bouton Enregistrer.")
                 // Un rapport de bug sans numéro de build ne sert à rien.
                 Text("Pépito \(Self.version)").font(.caption).foregroundStyle(.secondary)
             }
@@ -1759,7 +1720,6 @@ struct AdminView: View {
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
             app.settings.vaultPath = url.path
-            app.saveSettings()
         }
     }
 }

@@ -7,6 +7,32 @@ import VaultKit
 
 private let analysisJSON = #"{"summary":"Résumé","actions":[{"title":"Préparer le budget","children":[{"title":"Chiffrer"}]}]}"#
 
+@MainActor
+@Test func editedLLMSettingsSurviveRelaunchWithoutExplicitSave() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: "pepito-settings-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SettingsStore(fileURL: root.appending(path: "settings.json"))
+    try store.save(Settings(aiBaseURL: "http://localhost:8000/v1", aiModel: "old-model"))
+    func launch() -> MeetingCoordinator {
+        MeetingCoordinator(settingsStore: store, database: Database(path: root.appending(path: "db")),
+                           tokenStore: InMemoryTokenStore(), capture: MockCapturer(), calendar: MockCalendar())
+    }
+    let app = launch()
+    app.settings.aiBaseURL = "http://localhost:9000/v1"
+    app.settings.aiModel = "new-model"
+    let restarted = launch()
+    #expect(restarted.settings.aiBaseURL == "http://localhost:9000/v1")
+    #expect(restarted.settings.aiModel == "new-model")
+    #expect(app.storageError == nil)
+
+    // An unwritable destination must report failure instead of silently losing the edit.
+    try FileManager.default.removeItem(at: store.fileURL)
+    try FileManager.default.createDirectory(at: store.fileURL, withIntermediateDirectories: false)
+    app.settings.aiModel = "another-model"
+    #expect(app.storageError != nil)
+    #expect(!app.saveSettings())
+}
+
 /// Connexion indépendante pour provoquer des échecs SQLite réels, sans modifier le code de production.
 private func fixtureSQL(_ sql: String, at path: URL) throws {
     var handle: OpaquePointer?

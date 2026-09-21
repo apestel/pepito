@@ -21,7 +21,7 @@ struct PepitoApp: App {
         MenuBarExtra("Pépito", systemImage: app.isRecording ? "record.circle.fill" : "waveform.circle") {
             MenuBarContent(app: app).storageAlert(app)
         }
-        .menuBarExtraStyle(.window)
+        .menuBarExtraStyle(.menu)
 
         Window("Pépito", id: "main") {
             MainView(app: app).storageAlert(app)
