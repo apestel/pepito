@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Valeur JSON du pont, sans exposer les objets non-Sendable de Foundation.
 public enum AgentValue: Codable, Sendable, Equatable {
@@ -92,10 +93,15 @@ public final class AgentProcess {
         AgentEvent, Error
     > {
         guard process == nil else { throw AgentError.unavailable("Un agent travaille déjà") }
-        guard FileManager.default.isExecutableFile(atPath: node.path),
-            FileManager.default.fileExists(atPath: runtime.appending(path: "bridge.mjs").path)
-        else {
-            throw AgentError.unavailable("Moteur Pi absent du bundle. Relancez build-app.sh.")
+        let files = FileManager.default
+        let nodeExists = files.fileExists(atPath: node.path)
+        let nodeExecutable = files.isExecutableFile(atPath: node.path)
+        let bridgeExists = files.fileExists(atPath: runtime.appending(path: "bridge.mjs").path)
+        guard nodeExecutable, bridgeExists else {
+            Logger(subsystem: "com.pepito.app", category: "AgentRuntime").error(
+                "Moteur indisponible : node présent=\(nodeExists), exécutable=\(nodeExecutable), bridge présent=\(bridgeExists), runtime=\(runtime.path), node=\(node.path)")
+            throw AgentError.unavailable(
+                "Impossible de démarrer la mission : un composant de Pépito est manquant ou inaccessible. Quittez puis rouvrez Pépito et réessayez. Si le problème persiste, réinstallez la dernière version de l’application. Vos conversations sont conservées.")
         }
         let p = Process()
         let stdin = Pipe()

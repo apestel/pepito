@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 export function profile(root, runtime, network = false) {
   const quote = s => JSON.stringify(s);
   const reads = ['/System/Library', '/System/Volumes/Preboot/Cryptexes/OS', '/usr/lib', '/usr/bin', '/usr/share', '/bin', '/sbin',
-    '/Library/Developer', '/Library/Apple', '/Applications/Xcode.app/Contents/Developer', root, runtime]
+    '/Library/Apple', root, runtime]
     .map(p => existsSync(p) ? realpathSync(p) : p);
   return `(version 1)
 (deny default)
@@ -23,9 +23,7 @@ ${network ? '(allow network-outbound) (allow mach-lookup (global-name "com.apple
 export async function runScript(request, signal) {
   const root = realpathSync(request.root), runtime = dirname(fileURLToPath(import.meta.url));
   if (typeof request.code !== 'string' || Buffer.byteLength(request.code) > 262144) throw Error('Script trop volumineux');
-  const python = ['/Applications/Xcode.app/Contents/Developer/usr/bin/python3','/Library/Developer/CommandLineTools/usr/bin/python3'].find(existsSync);
-  if (request.language === 'python' && !python) throw Error('Python 3 absent. Installez les outils de développement Apple.');
-  const command = {python:[python,'-I','-B','-c'], javascript:[process.execPath,'-e'], shell:['/bin/bash','--noprofile','--norc','-c']}[request.language];
+  const command = {python:[process.execPath,join(runtime,'python-runner.mjs')], javascript:[process.execPath,'-e'], shell:['/bin/bash','--noprofile','--norc','-c']}[request.language];
   if (!command) throw Error('Langage inconnu');
   const timeout = Math.max(100, Math.min(180000, request.timeout_ms ?? 60000));
   const temp = join(root,'.tmp'); mkdirSync(temp,{recursive:true,mode:0o700});
@@ -65,7 +63,7 @@ if(process.argv[1]===fileURLToPath(import.meta.url)) {
     if(!input.includes('\n'))return; started=true;
     void (async()=>{try {process.stdout.write(JSON.stringify(await runScript(JSON.parse(input),controller.signal))+'\n');}
       catch(e){process.stdout.write(JSON.stringify({stdout:'',stderr:e.message,exitCode:-1,duration:0})+'\n');}
-      finally{process.exit(0);}})();
+      finally{process.stdout.end(() => process.exit(0));}})();
   });
   process.stdin.on('end',()=>controller.abort());
   process.on('SIGTERM',()=>controller.abort());
